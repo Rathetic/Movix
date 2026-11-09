@@ -361,7 +361,7 @@ function renderizarSync() {
   $("btnRestaurarPreventivo").hidden = !temPreventivo;
   $("botoesMigracao").hidden = !logado || !(ativo || temPreventivo);
   if (!logado) { $("relatorioMigracao").hidden = $("tituloRelatorio").hidden = $("blocoDuplicatas").hidden = true; return; }
-  renderizarRelatorio();
+  renderizarRelatorioMigracao();
 
   let estado = "Desativada neste aparelho";
   if (ativo) estado = sincronizando ? "Sincronizando..." : resultadoSync.offline ? "Sem internet (sincroniza ao voltar)" : "Ativa";
@@ -520,7 +520,7 @@ function restaurarBackupPreventivo() {
 }
 
 /* --- Relatório da migração --- */
-function renderizarRelatorio() {
+function renderizarRelatorioMigracao() {
   const box = $("relatorioMigracao"), r = lerJson(RELATORIO_CHAVE);
   box.hidden = $("tituloRelatorio").hidden = !r;
   box.innerHTML = "";
