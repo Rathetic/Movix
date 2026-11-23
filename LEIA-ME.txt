@@ -1,0 +1,19 @@
+Movix E1 - correcoes finais de seguranca do carregamento
+
+Copie por cima do projeto, preservando as pastas:
+  backup-local.js, index.html                      -> raiz do projeto
+  testes/*                                          -> pasta testes/
+
+NAO mudam nesta rodada: sync.js, script.js, auth.js, lobby.js, nav.js, frete.js, config.js, style.css.
+
+O que mudou:
+  1) backup-local.js: BLOQUEAR_APP_SEM_WEB_LOCKS = true (sem Web Locks o app nao abre, nada e gravado) e o fluxo inicial
+     do modulo nao faz nada sem Web Locks.
+  2) index.html: o carregador FALHA FECHADO (so carrega os 6 scripts se MovixBackup.aguardarInicio() existir, devolver uma
+     promessa e resolver com "ok"; qualquer falha mostra a tela de erro).
+
+Executar os testes (Chromium via Playwright), com o projeto servido por http://localhost:
+  python3 -m http.server 8765
+  python3 testes/rodar_testes_chromium.py      # 47 testes do modulo
+  python3 testes/integracao_app.py             # 87 testes com o app real
+Resultado individual da ultima execucao: testes/RESULTADO-testes.txt

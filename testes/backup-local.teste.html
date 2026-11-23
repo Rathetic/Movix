@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Movix – testes do backup local (E1)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; max-width: 980px; }
+  table { border-collapse: collapse; width: 100%; } td, th { border: 1px solid #ccc; padding: 4px 8px; text-align: left; vertical-align: top; }
+  .ok { background: #e6f6e6; } .falha { background: #fde4e4; } code { background: #eee; padding: 0 3px; }
+  button { font: inherit; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<h1>Movix – testes automatizados do backup local (E1)</h1>
+<p>Esta página <b>não faz parte do aplicativo</b> e não é carregada por ele. Cada teste usa um banco, prefixo e chaves próprios
+(<code>isolamento</code> do gancho <code>window.__MOVIX_TESTE_BACKUP</code>), então <b>não toca nos dados reais</b>. Sirva a pasta do projeto por
+<code>http://localhost</code> (o SHA-256 exige contexto seguro) e abra esta página.</p>
+<p><button id="rodar">Executar todos</button> <span id="resumo"></span></p>
+<table id="tabela"><thead><tr><th>#</th><th>Teste</th><th>Resultado</th><th>Detalhes</th></tr></thead><tbody></tbody></table>
+<h2>Gancho <code>window.__MOVIX_TESTE_BACKUP</code></h2>
+<p>Lido uma única vez ao carregar <code>backup-local.js</code>; inerte se indefinido; só consegue <b>piorar</b> condições (falhas, atrasos), nunca afrouxar verificações;
+não recebe nem registra dados. Campos: <code>isolamento, falharAbrirBanco, falharGravacao, lancarQuota, falharLeitura, falharSha256, corromperPayloadAposGravar,
+atrasoGravacaoMs, pararAposTransacao, perderParticipacaoAposTransacao, falharAoAplicarChave, falharRollback, semWebLocks, atrasoRestauracaoMs,
+atrasoEntreLiberarEAdquirirMs, validacaoSimulada, donoForcadoNoSnapshot, prazoGarantirMs, semRecarregar, semAutomaticos</code>.</p>
+<script>
+"use strict";
+const SRC = new URL("../backup-local.js", location.href).href;
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+async function sha(s) { const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))); return Array.from(h).map((x) => x.toString(16).padStart(2, "0")).join(""); }
+const K = (iso, suf) => iso + "-motograna:" + suf, SYNC = (iso) => "movix:sync-" + iso, RECUP = (iso) => "movix:backup-recuperacao-" + iso, PREV = (iso) => "movix:backup-preventivo-" + iso;
+const lista = (n, pre) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: pre + i, valor: i + 1, data: "2026-11-0" + ((i % 9) + 1) })));
+function fixture(iso, extra) {
+  const f = { movimentacoes: lista(6, "m"), combustivel: lista(2, "c"), manutencoes: lista(1, "u"), turnos: lista(3, "t"), veiculos: lista(1, "v"), objetivos: lista(1, "o"),
+    metaSemanal: "500", metaMensal: "2000", remuneracao: JSON.stringify({ fixo: 50, porEntrega: 4 }), veiculoAtivo: "v0", frete: JSON.stringify({ precoKm: 2.5 }) };
+  Object.assign(f, extra || {});
+  Object.keys(f).forEach((k) => { if (f[k] === null) localStorage.removeItem(K(iso, k)); else localStorage.setItem(K(iso, k), f[k]); });
+  return f;
+}
+const lsDados = (iso) => { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.indexOf(iso + "-motograna:") === 0) o[k] = localStorage.getItem(k); } return o; };
+function idb(iso) {
+  return new Promise((res, rej) => { const r = indexedDB.open("movix-backup-local-" + iso, 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onupgradeneeded = () => { r.result.close(); rej(new Error("banco inexistente")); }; });
+}
+async function idbOp(iso, loja, modo, fn) {
+  const db = await idb(iso);
+  try { return await new Promise((res, rej) => { const tx = db.transaction(loja, modo); let out; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); Promise.resolve(fn(tx)).then((v) => { out = v; }); }); } finally { db.close(); }
+}
+const rq = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const idbTodos = (iso, loja) => idbOp(iso, [loja], "readonly", (tx) => rq(tx.objectStore(loja).getAll()));
+async function novo(iso, hook, preparar) {
+  const ifr = document.createElement("iframe");
+  ifr.srcdoc = "<!doctype html><meta charset='utf-8'><body></body>"; document.body.appendChild(ifr);
+  await new Promise((r) => ifr.addEventListener("load", r, { once: true }));
+  const w = ifr.contentWindow;
+  w.__MOVIX_TESTE_BACKUP = Object.assign({ isolamento: iso, semRecarregar: true, semAutomaticos: true }, hook || {});
+  if (preparar) preparar(w);
+  await new Promise((res) => { const s = w.document.createElement("script"); s.src = SRC; s.onload = res; s.onerror = res; w.document.body.appendChild(s); });
+  const nomeLock = "movix-dados-" + iso, contar = async () => { const q = await navigator.locks.query(); return q.held.filter((l) => l.name === nomeLock).length; };
+  return { w, ifr, api: w.MovixBackup, fechar: async () => { const antes = await contar(); ifr.remove(); const lim = Date.now() + 3000; while (Date.now() < lim && (await contar()) >= antes && antes > 0) await dormir(30); await dormir(60); } };
+}
+async function limpar(iso) {
+  Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).forEach((k) => { if (k && k.indexOf(iso) !== -1) localStorage.removeItem(k); });
+  document.querySelectorAll("iframe").forEach((f) => f.remove());
+  await dormir(50);
+  await new Promise((res) => { const r = indexedDB.deleteDatabase("movix-backup-local-" + iso); r.onsuccess = r.onerror = r.onblocked = () => res(); setTimeout(res, 1500); });
+}
+const sessaoFalsa = (id, extra) => (w) => {
+  w.sessao = { user: { id }, access_token: "tok-de-teste", expires_at: Math.floor(Date.now() / 1000) + 3600 };
+  w.lerConfiguracao = () => ({ ok: true, url: "https://exemplo.test", chave: "chave-publica-de-teste" });
+  w.__chamadas = 0;
+  w.fetch = async (url) => { w.__chamadas++; if (extra && extra.rede) throw new Error("sem rede"); if (extra && extra.http) return { ok: false, status: extra.http }; if (extra && extra.atraso) await dormir(extra.atraso); return { ok: true, status: 200, json: async () => ({ id: (extra && extra.idServidor) || id }) }; };
+};
+const testes = [];
+const T = (nome, fn) => testes.push({ nome, fn });
+let falhasDoTeste = [];
+const ok = (c, msg) => { if (!c) falhasDoTeste.push(msg); };
+const eq = (a, b, msg) => { if (a !== b) falhasDoTeste.push(msg + " (esperado " + JSON.stringify(b) + ", obtido " + JSON.stringify(a) + ")"); };
+
+/* ---------- Criação, integridade e inventário ---------- */
+T("T1 Criar snapshot: gravado, verificado e com os mesmos hashes do LocalStorage", async (iso) => {
+  const f = fixture(iso), m = await novo(iso), r = await m.api.garantir({ origem: "manual" });
+  ok(r.ok && r.estado === "concluido", "deveria concluir: " + JSON.stringify(r));
+  ok((await m.api.verificar(r.id)).ok, "verificar()");
+  const [meta] = await idbTodos(iso, "snapshots"), [pl] = await idbTodos(iso, "payloads");
+  eq(meta.estado, "concluido", "estado");
+  for (const k of Object.keys(f)) eq(await sha(pl.dados[K(iso, k)]), await sha(f[k]), "hash de " + k);
+  eq(meta.qualidade, "saudavel", "qualidade"); eq(meta.dono.classe, "local", "dono local");
+  eq(meta.contagens[K(iso, "movimentacoes")], 6, "contagem de movimentações");
+});
+T("T2 Apagar o LocalStorage: o snapshot continua disponível e verificável", async (iso) => {
+  fixture(iso); let m = await novo(iso); const r = await m.api.garantir({ origem: "manual" }); await m.fechar();
+  Object.keys(lsDados(iso)).forEach((k) => localStorage.removeItem(k));
+  m = await novo(iso); const l = await m.api.listar();
+  ok(l.length === 1 && l[0].id === r.id, "snapshot listado"); ok((await m.api.verificar(r.id)).ok, "ainda íntegro");
+});
+T("T3 JSON corrompido: o novo snapshot é 'suspeito' e o último saudável é preservado", async (iso) => {
+  fixture(iso); const m = await novo(iso), a = await m.api.garantir({ origem: "manual" });
+  localStorage.setItem(K(iso, "movimentacoes"), "{isto não é json");
+  const b = await m.api.garantir({ origem: "manual" });
+  ok(a.ok && b.ok, "ambos criados"); const l = await m.api.listar();
+  const sb = l.find((x) => x.id === b.id), sa = l.find((x) => x.id === a.id);
+  eq(sb.qualidade, "suspeito", "corrompido é suspeito"); ok(sb.avisos.some((x) => x.indexOf("ilegivel:") === 0), "aviso de ilegível"); eq(sa.qualidade, "saudavel", "anterior saudável");
+  const pl = (await idbTodos(iso, "payloads")).find((p) => p.snapshotId === b.id);
+  eq(pl.dados[K(iso, "movimentacoes")], "{isto não é json", "texto bruto preservado");
+  const ret = m.w.MovixBackup._puro.calcularRetencao(await idbTodos(iso, "snapshots"));
+  ok(ret.manter.has(a.id), "retenção mantém o último saudável");
+});
+T("T4 Falha durante a gravação: nada parcial e snapshot anterior preservado", async (iso) => {
+  fixture(iso); let m = await novo(iso); const a = await m.api.garantir({ origem: "manual" }); await m.fechar();
+  localStorage.setItem(K(iso, "metaSemanal"), "999");
+  m = await novo(iso, { falharGravacao: true }); const r = await m.api.garantir({ origem: "manual" });
+  ok(!r.ok && r.etapa === "T1", "deveria falhar em T1: " + JSON.stringify(r));
+  const metas = await idbTodos(iso, "snapshots"), pls = await idbTodos(iso, "payloads");
+  ok(metas.length === 1 && metas[0].id === a.id && pls.length === 1, "só o snapshot anterior existe");
+});
+T("T5 Cota insuficiente: falha controlada, nada parcial, app continua", async (iso) => {
+  fixture(iso); const m = await novo(iso, { lancarQuota: true }), r = await m.api.garantir({ origem: "manual" });
+  ok(!r.ok && r.motivo === "cota", "motivo cota: " + JSON.stringify(r)); eq((await idbTodos(iso, "snapshots")).length, 0, "nenhum registro");
+  eq(m.api.estado().cota, true, "estado.cota");
+});
+T("T6 Retenção 14/8/6 (+risco, último íntegro/saudável): união, sem substituição e nunca apaga o último íntegro", async (iso) => {
+  const m = await novo(iso), P = m.api._puro; const base = new Date(2026, 10, 10, 12).getTime(), dia = 86400000;
+  const L = Array.from({ length: 200 }, (_, i) => { const t = base - i * dia; return { id: "s" + i, criadoEm: t, diaLocal: P.diaLocal(t), estado: "concluido", origem: "diario", qualidade: "saudavel" }; });
+  const r = P.calcularRetencao(L);
+  ok(L.slice(0, 14).every((s) => r.manter.has(s.id)), "14 diários mantidos");
+  const semanais = new Set(L.slice(14).map((s) => P.semanaLocal(s.diaLocal)));
+  ok(r.manter.size <= 14 + 8 + 6 + 3, "teto respeitado: " + r.manter.size); ok(r.manter.size >= 14 + 8 + 6, "mínimo: " + r.manter.size);
+  ok(r.manter.has("s0"), "último íntegro mantido"); ok(r.apagar.length === 200 - r.manter.size, "o resto é apagado");
+  // sobreposição: o mais recente de risco também é o representante do dia => contado uma vez
+  const L2 = L.slice(0, 20).map((s, i) => (i === 3 ? Object.assign({}, s, { origem: "pre_restauracao" }) : s));
+  const r2 = P.calcularRetencao(L2); ok(r2.manter.has("s3"), "risco mantido"); eq(r2.manter.size, 14 + 0 + 0 + (r2.manter.size - 14), "sem estouro");
+  // 12 snapshots de risco: só os 10 mais recentes ficam
+  const L3 = Array.from({ length: 12 }, (_, i) => ({ id: "r" + i, criadoEm: base - i * 1000, diaLocal: P.diaLocal(base), estado: "concluido", origem: "pre_importacao", qualidade: "saudavel" }));
+  const r3 = P.calcularRetencao(L3); ok(r3.manter.has("r0") && r3.manter.has("r9"), "10 de risco"); ok(!r3.manter.has("r11"), "o 12º sai");
+  // intermediários nunca são apagados; inválidos além de 3 saem; último saudável preservado mesmo com recentes suspeitos
+  const L4 = [{ id: "g", criadoEm: base, diaLocal: P.diaLocal(base), estado: "gravando", origem: "alteracao" }].concat(Array.from({ length: 5 }, (_, i) => ({ id: "i" + i, criadoEm: base - i, diaLocal: P.diaLocal(base), estado: "invalido", origem: "x" })));
+  const r4 = P.calcularRetencao(L4); ok(!r4.apagar.includes("g"), "intermediário preservado"); eq(r4.apagar.length, 2, "2 inválidos além dos 3");
+  const L5 = Array.from({ length: 30 }, (_, i) => ({ id: "q" + i, criadoEm: base - i * 3600000, diaLocal: P.diaLocal(base - i * 3600000), estado: "concluido", origem: "alteracao", qualidade: i === 29 ? "saudavel" : "suspeito" }));
+  ok(P.calcularRetencao(L5).manter.has("q29"), "último saudável mantido mesmo sendo o mais antigo");
+  ok(P.calcularRetencao([]).apagar.length === 0, "lista vazia");
+});
+T("T7 Snapshot corrompido após gravar: vira 'invalido' e a restauração é bloqueada", async (iso) => {
+  fixture(iso); const m = await novo(iso, { corromperPayloadAposGravar: true }), r = await m.api.garantir({ origem: "manual" });
+  ok(!r.ok && r.etapa === "T3", "falha na verificação (T3): " + JSON.stringify(r));
+  const [meta] = await idbTodos(iso, "snapshots"); eq(meta.estado, "invalido", "estado inválido");
+  eq((await m.api.listar()).length, 0, "não aparece como backup"); const p = await m.api.planejarRestauracao(meta.id, {});
+  ok(!p.ok && p.bloqueios.some((b) => b.indexOf("snapshot_nao_concluido") === 0), "plano bloqueado");
+});
+T("T13 IndexedDB indisponível: o app continua e a operação de risco exige confirmação explícita", async (iso) => {
+  fixture(iso); const m = await novo(iso, { falharAbrirBanco: true }), r = await m.api.garantir({ origem: "manual" });
+  ok(!r.ok && r.etapa === "banco", "falha controlada: " + JSON.stringify(r)); eq(m.api.estado().idb, "indisponivel", "estado idb");
+  let confirmou = 0; m.w.confirm = (t) => { confirmou++; ok(/SEM essa cópia/.test(t), "texto do aviso"); return false; };
+  eq(await m.api.protegerOperacao("pre_importacao", "teste"), false, "cancelar impede"); m.w.confirm = () => { confirmou++; return true; };
+  eq(await m.api.protegerOperacao("pre_importacao", "teste"), true, "confirmar prossegue"); eq(confirmou, 2, "duas confirmações");
+});
+T("T15 Snapshot capturado mas ainda não persistido não é backup", async (iso) => {
+  fixture(iso); const m = await novo(iso, { atrasoGravacaoMs: 700 }), p = m.api.garantir({ origem: "manual" });
+  await dormir(200); ok(m.api.estado().emMemoria.some((e) => e[1] === "gravando"), "em memória: gravando");
+  eq((await m.api.listar()).length, 0, "nada concluído ainda"); const r = await p; ok(r.ok && r.estado === "concluido", "ao final, concluído");
+});
+T("T18 Falha no SHA-256: nenhum snapshot e confirmação explícita", async (iso) => {
+  fixture(iso); const m = await novo(iso, { falharSha256: true }), r = await m.api.garantir({ origem: "manual" });
+  ok(!r.ok, "não cria: " + JSON.stringify(r)); eq((await idbTodos(iso, "snapshots").catch(() => [])).length, 0, "nenhum registro");
+  m.w.confirm = () => false; eq(await m.api.protegerOperacao("pre_remocao_copias", "t"), false, "pede confirmação");
+});
+T("C1-C5 Inventário: ausentes/ilegíveis registrados, omissão silenciosa, chave desconhecida e sem credenciais", async (iso) => {
+  fixture(iso, { frete: null, remuneracao: null }); localStorage.setItem(K(iso, "teste"), "x");
+  localStorage.setItem(iso + "-movix:sessao", JSON.stringify({ access_token: "SEGREDO", refresh_token: "SEGREDO2" })); localStorage.setItem(SYNC(iso), JSON.stringify({ ativo: false, usuario: "u9" }));
+  const m = await novo(iso), a = await m.api.garantir({ origem: "manual" }); ok(a.ok, "criou");
+  const meta = (await idbTodos(iso, "snapshots"))[0], pl = (await idbTodos(iso, "payloads"))[0];
+  eq(meta.inventario.estados[K(iso, "frete")], "ausente", "frete ausente registrado"); eq(meta.inventario.estados[K(iso, "movimentacoes")], "presente_legivel", "movimentações legíveis");
+  ok(meta.inventario.foraDoCatalogo.indexOf(K(iso, "teste")) !== -1, "chave desconhecida listada"); ok(K(iso, "teste") in pl.dados, "e capturada");
+  ok(Object.keys(pl.dados).every((k) => k.indexOf(iso + "-motograna:") === 0), "só chaves do prefixo"); ok(JSON.stringify(pl.dados).indexOf("SEGREDO") === -1, "nenhum token no payload");
+  eq(meta.completude.catalogadas, 13, "13 chaves catalogadas"); ok(meta.completude.ausentes >= 2, "ausentes contados");
+  localStorage.removeItem(K(iso, "turnos"));                                    // omissão silenciosa de uma lista que existia
+  const b = await m.api.garantir({ origem: "manual" }), mb = (await m.api.listar()).find((x) => x.id === b.id);
+  eq(mb.qualidade, "suspeito", "omissão => suspeito"); ok(mb.avisos.some((x) => x.indexOf("chave_ausente:") === 0), "aviso de chave ausente");
+});
+T("T35 turnoAtual e turnoEncerrado ilegíveis: capturados em bruto, nunca descartados", async (iso) => {
+  fixture(iso, { turnoAtual: "{quebrado", turnoEncerrado: JSON.stringify({ id: "t9", inicio: 1, fim: 2, pausaMin: 0 }) });
+  const m = await novo(iso), r = await m.api.garantir({ origem: "manual" }), meta = (await idbTodos(iso, "snapshots"))[0], pl = (await idbTodos(iso, "payloads"))[0];
+  ok(r.ok, "criou"); eq(meta.inventario.estados[K(iso, "turnoAtual")], "presente_ilegivel", "turnoAtual ilegível"); eq(pl.dados[K(iso, "turnoAtual")], "{quebrado", "bruto preservado");
+  eq(meta.inventario.estados[K(iso, "turnoEncerrado")], "presente_legivel", "turnoEncerrado legível"); eq(meta.qualidade, "suspeito", "suspeito");
+});
+
+/* ---------- Máquina de estados T1..T5 e recuperação ---------- */
+for (const n of [1, 2, 3, 4, 5]) {
+  T("A1 Interrupção após T" + n + ": estado persistente correto; só a recuperação sob lock exclusivo promove", async (iso) => {
+    fixture(iso); let m = await novo(iso, { pararAposTransacao: n }); const r = await m.api.garantir({ origem: "manual" });
+    ok(!r.ok && r.etapa === "parada_de_teste", "parou: " + JSON.stringify(r)); const id = r.id; await m.fechar(); await dormir(100);
+    const esperado = ["gravando", "confirmado", "confirmado", "verificado", "concluido"][n - 1];
+    eq((await idbTodos(iso, "snapshots"))[0].estado, esperado, "estado persistente");
+    m = await novo(iso); const antes = await m.api.listar();
+    eq(antes.length, n === 5 ? 1 : 0, "só 'concluido' aparece como backup antes da recuperação");
+    const rec = await m.api.recuperarIntermediarios(); ok(rec.ok, "recuperação: " + JSON.stringify(rec));
+    eq((await idbTodos(iso, "snapshots"))[0].estado, "concluido", "promovido após revalidar"); ok((await m.api.verificar(id)).ok, "íntegro");
+  });
+}
+T("A3 Intermediário com payload adulterado: marcado 'invalido', nunca promovido", async (iso) => {
+  fixture(iso); let m = await novo(iso, { pararAposTransacao: 2 }); const r = await m.api.garantir({ origem: "manual" }); await m.fechar();
+  await idbOp(iso, ["payloads"], "readwrite", async (tx) => { const p = await rq(tx.objectStore("payloads").get(r.id)); p.dados[Object.keys(p.dados)[0]] += "!"; await rq(tx.objectStore("payloads").put(p)); });
+  m = await novo(iso); const rec = await m.api.recuperarIntermediarios(); ok(rec.ok && rec.resultados[0].resultado === "invalido", "inválido: " + JSON.stringify(rec));
+  eq((await m.api.listar()).length, 0, "não é backup");
+});
+T("A4 Metadados sem payload: inválido; nunca aceito como completo", async (iso) => {
+  fixture(iso); let m = await novo(iso, { pararAposTransacao: 1 }); const r = await m.api.garantir({ origem: "manual" }); await m.fechar();
+  await idbOp(iso, ["payloads"], "readwrite", (tx) => rq(tx.objectStore("payloads").delete(r.id)));
+  m = await novo(iso); const rec = await m.api.recuperarIntermediarios(); ok(rec.resultados[0].resultado === "invalido" && /payload_ausente/.test(rec.resultados[0].motivo), "payload_ausente: " + JSON.stringify(rec));
+});
+T("L2/L7 Aba viva no meio de T1-T5: outra aba NÃO assume (sem critério de tempo); depois da saída, recupera", async (iso) => {
+  fixture(iso); const a = await novo(iso, { pararAposTransacao: 1 }); const r = await a.api.garantir({ origem: "manual" });     // A "suspensa": viva, segura o lock compartilhado
+  await dormir(150); const b = await novo(iso); const rec = await b.api.recuperarIntermediarios();
+  ok(!rec.ok && rec.motivo === "outra_aba", "B recusado: " + JSON.stringify(rec)); eq((await idbTodos(iso, "snapshots"))[0].estado, "gravando", "continua 'gravando'");
+  await a.fechar(); await dormir(300); const rec2 = await b.api.recuperarIntermediarios(); ok(rec2.ok && rec2.processados === 1, "recuperado depois da saída de A: " + JSON.stringify(rec2));
+  eq((await idbTodos(iso, "snapshots"))[0].estado, "concluido", "concluído");
+});
+T("L4 Web Locks indisponível: restauração e recuperação bloqueadas; nada muda", async (iso) => {
+  fixture(iso); let m = await novo(iso, { pararAposTransacao: 1 }); const r = await m.api.garantir({ origem: "manual" }); await m.fechar();
+  m = await novo(iso, { semWebLocks: true }); const rec = await m.api.recuperarIntermediarios(); ok(!rec.ok && rec.motivo === "sem_web_locks", "recuperação: " + JSON.stringify(rec));
+  const rs = await m.api.restaurar(r.id, {}); ok(!rs.ok && rs.motivo === "sem_web_locks", "restauração: " + JSON.stringify(rs)); eq((await idbTodos(iso, "snapshots"))[0].estado, "gravando", "intacto");
+  const c = await m.api.garantir({ origem: "manual" }); ok(c.ok, "criar snapshots continua funcionando sem Web Locks");
+});
+
+/* ---------- Restauração, rollback e abas ---------- */
+async function preparaRestauracao(iso, hook, mutar) {
+  const f = fixture(iso); let m = await novo(iso); const a = await m.api.garantir({ origem: "manual" }); await m.fechar(); await dormir(120);
+  localStorage.setItem(K(iso, "movimentacoes"), lista(2, "novo")); localStorage.setItem(K(iso, "metaSemanal"), "111"); localStorage.removeItem(K(iso, "objetivos")); localStorage.setItem(K(iso, "veiculoAtivo"), "v9");
+  if (mutar) mutar();
+  return { f, id: a.id, m: await novo(iso, hook) };
+}
+T("T8 Restaurar snapshot válido: dados recuperados, hashes iguais, chaves fora do plano e movix:sync intactas", async (iso) => {
+  localStorage.setItem(SYNC(iso), JSON.stringify({ ativo: false, usuario: null, x: 1 })); const { f, id, m } = await preparaRestauracao(iso, null, () => { localStorage.setItem(K(iso, "turnoAtual"), JSON.stringify({ inicio: 5, pausas: [] })); });
+  const r = await m.api.restaurar(id, {}); ok(r.ok, "restaurou: " + JSON.stringify(r)); const d = lsDados(iso);
+  for (const k of Object.keys(f)) eq(await sha(d[K(iso, k)] || ""), await sha(f[k]), "hash de " + k);
+  eq(d[K(iso, "turnoAtual")], JSON.stringify({ inicio: 5, pausas: [] }), "turnoAtual atual NÃO foi tocado"); eq(localStorage.getItem(SYNC(iso)), JSON.stringify({ ativo: false, usuario: null, x: 1 }), "movix:sync intacto");
+  eq(localStorage.getItem(RECUP(iso)), null, "marcador limpo"); const snaps = await m.api.listar(); ok(snaps.some((s) => s.origem === "pre_restauracao"), "snapshot de segurança existe"); ok(snaps.some((s) => s.id === id), "o snapshot de origem NÃO foi apagado pela retenção");
+});
+T("T9 Falha no snapshot pré-restauração: restauração bloqueada e dados atuais inalterados", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso, { falharGravacao: true }); const antes = JSON.stringify(lsDados(iso));
+  const r = await m.api.restaurar(id, {}); ok(!r.ok && r.motivo === "pre_restauracao_falhou", "bloqueada: " + JSON.stringify(r)); eq(JSON.stringify(lsDados(iso)), antes, "dados atuais inalterados"); eq(localStorage.getItem(RECUP(iso)), null, "sem marcador");
+});
+T("T28 Falha ao aplicar (3ª chave): rollback validado, estado anterior restaurado", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso, { falharAoAplicarChave: 3 }); const antes = JSON.stringify(lsDados(iso));
+  const r = await m.api.restaurar(id, {}); ok(!r.ok && r.motivo === "falha_na_aplicacao" && r.rollback === "ok", "rollback ok: " + JSON.stringify(r));
+  eq(JSON.stringify(lsDados(iso)), antes, "todas as chaves voltaram ao estado anterior"); eq(localStorage.getItem(RECUP(iso)), null, "marcador limpo");
+});
+T("T29 Rollback também falha: recuperação pendente persistente; ativação recusada; depois resolvida", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso, { falharAoAplicarChave: 2, falharRollback: true }); const antes = JSON.stringify(lsDados(iso));
+  const r = await m.api.restaurar(id, {}); ok(!r.ok && r.motivo === "recuperacao_pendente", "pendente: " + JSON.stringify(r));
+  const mk = JSON.parse(localStorage.getItem(RECUP(iso))); eq(mk.estado, "pendente", "marcador no LocalStorage"); ok(mk.preSnapshotId, "aponta o snapshot de segurança");
+  let confirmou = 0; m.w.confirm = () => { confirmou++; return true; }; eq(await m.api.protegerOperacao("pre_ativacao_sync", "t"), false, "ativação recusada"); eq(confirmou, 0, "sem diálogo de continuar");
+  const outra = await m.api.restaurar(id, {}); ok(!outra.ok && outra.motivo === "recuperacao_pendente", "nova restauração bloqueada"); await m.fechar(); await dormir(150);
+  const m2 = await novo(iso); const res = await m2.api.resolverRecuperacao({ acao: "reverter" }); ok(res.ok, "resolvida: " + JSON.stringify(res));
+  eq(JSON.stringify(lsDados(iso)), antes, "estado anterior recuperado"); eq(localStorage.getItem(RECUP(iso)), null, "marcador limpo");
+});
+T("T30 Restauração interrompida (marcador 'em_andamento' sem dono vivo): vira 'pendente' sob lock exclusivo", async (iso) => {
+  fixture(iso); let m = await novo(iso); await m.api.garantir({ origem: "manual" }); await m.fechar(); await dormir(120);
+  const mk = { estado: "em_andamento", snapshotAlvo: "x", preSnapshotId: "y", etapa: "aplicando", desde: Date.now() };
+  await idbOp(iso, ["meta"], "readwrite", (tx) => rq(tx.objectStore("meta").put({ chave: "recuperacao", valor: mk }))); localStorage.setItem(RECUP(iso), JSON.stringify(mk));
+  m = await novo(iso, { semAutomaticos: false }); await m.api.pronto(); const e = JSON.parse(localStorage.getItem(RECUP(iso)));
+  eq(e.estado, "pendente", "marcador virou pendente"); eq(e.etapa, "interrompida", "etapa"); eq(await m.api.protegerOperacao("pre_ativacao_sync", "t"), false, "ativação recusada");
+});
+T("L1 Duas abas: a restauração é recusada na hora, sem tocar em nada", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso); const outra = await novo(iso); await dormir(150); const antes = JSON.stringify(lsDados(iso));
+  const r = await m.api.restaurar(id, {}); ok(!r.ok && r.motivo === "outra_aba", "recusada: " + JSON.stringify(r)); eq(JSON.stringify(lsDados(iso)), antes, "nada foi gravado"); eq(localStorage.getItem(RECUP(iso)), null, "sem marcador");
+  ok(!(await m.api.listar()).some((s) => s.origem === "pre_restauracao"), "nem snapshot de segurança"); await outra.fechar();
+});
+T("L5 Aba nova durante a restauração: espera, não participa até o fim", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso, { atrasoRestauracaoMs: 1200 }); const p = m.api.restaurar(id, {}); await dormir(500);
+  const nova = await novo(iso); await dormir(300); eq(nova.api.estado().participando, false, "aba nova ainda não participa");
+  const r = await p; ok(r.ok, "restauração concluiu: " + JSON.stringify(r)); await dormir(400); eq(nova.api.estado().participando, true, "participa depois do fim");
+});
+T("L5b Escrita durante a preparação: restauração abortada, nada aplicado, pré-snapshot preservado", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso, { atrasoRestauracaoMs: 800 }); const p = m.api.restaurar(id, {}); await dormir(300);
+  localStorage.setItem(K(iso, "metaMensal"), "7777"); const r = await p; ok(!r.ok && r.motivo === "estado_mudou", "abortada: " + JSON.stringify(r));
+  eq(localStorage.getItem(K(iso, "metaMensal")), "7777", "a escrita feita durante a preparação foi preservada"); eq(localStorage.getItem(K(iso, "metaSemanal")), "111", "snapshot não foi aplicado");
+  eq(localStorage.getItem(RECUP(iso)), null, "marcador limpo");
+});
+T("L6 Duas restaurações simultâneas na mesma aba: só uma executa", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso); const [a, b] = await Promise.all([m.api.restaurar(id, {}), m.api.restaurar(id, {})]);
+  eq([a, b].filter((x) => x.ok).length, 1, "exatamente uma ok: " + JSON.stringify([a, b])); ok([a, b].some((x) => x.motivo === "operacao_exclusiva_em_andamento"), "a outra foi recusada");
+});
+T("L6b Duas abas restaurando ao mesmo tempo: nunca duas executam", async (iso) => {
+  const f = fixture(iso); let a = await novo(iso); const s = await a.api.garantir({ origem: "manual" }); await a.fechar(); await dormir(120);
+  localStorage.setItem(K(iso, "metaSemanal"), "1"); a = await novo(iso); const b = await novo(iso); await dormir(150);
+  const [x, y] = await Promise.all([a.api.restaurar(s.id, {}), b.api.restaurar(s.id, {})]); ok([x, y].filter((r) => r.ok).length <= 1, "no máximo uma: " + JSON.stringify([x, y]));
+  const ult = await idbOp(iso, ["meta"], "readonly", (tx) => rq(tx.objectStore("meta").get("ultimaRestauracao"))); ok([x, y].filter((r) => r.ok).length === (ult ? 1 : 0), "consistente com ultimaRestauracao");
+});
+T("T33 turnoAtual: fora por padrão; só entra com incluirTurnoAtual e, havendo um ativo, com substituirTurnoAtual", async (iso) => {
+  const snapTurno = JSON.stringify({ inicio: Date.now() - 3600000, pausas: [] }), atualTurno = JSON.stringify({ inicio: Date.now() - 600000, pausas: [] });
+  fixture(iso, { turnoAtual: snapTurno }); let m = await novo(iso); const s = await m.api.garantir({ origem: "manual" }); await m.fechar(); await dormir(120);
+  localStorage.setItem(K(iso, "turnoAtual"), atualTurno); localStorage.setItem(K(iso, "metaSemanal"), "1"); m = await novo(iso);
+  let r = await m.api.restaurar(s.id, {}); ok(r.ok, "restaurou: " + JSON.stringify(r)); eq(localStorage.getItem(K(iso, "turnoAtual")), atualTurno, "turno atual preservado por padrão"); localStorage.setItem(K(iso, "metaSemanal"), "2");
+  const p1 = await m.api.planejarRestauracao(s.id, { incluirTurnoAtual: true }); ok(p1.conflitos.some((c) => c.motivo === "turno_em_andamento_atual_existe"), "conflito sem substituirTurnoAtual");
+  r = await m.api.restaurar(s.id, { incluirTurnoAtual: true, substituirTurnoAtual: true }); ok(r.ok, "com os dois parâmetros: " + JSON.stringify(r)); eq(localStorage.getItem(K(iso, "turnoAtual")), snapTurno, "turno substituído explicitamente");
+});
+T("T34 turnoEncerrado: restaura sem conflito; com conflito não sobrescreve e reporta; ausência no snapshot não remove", async (iso) => {
+  const enc = JSON.stringify({ id: "t9", inicio: 1000, fim: 2000, pausaMin: 0 });
+  fixture(iso, { turnoEncerrado: enc }); let m = await novo(iso); const s = await m.api.garantir({ origem: "manual" }); await m.fechar(); await dormir(120);
+  localStorage.removeItem(K(iso, "turnoEncerrado")); localStorage.setItem(K(iso, "metaSemanal"), "1"); m = await novo(iso);
+  let p = await m.api.planejarRestauracao(s.id, {}); eq(p.conflitos.length, 0, "sem conflito"); let r = await m.api.restaurar(s.id, {}); ok(r.ok, "restaurou"); eq(localStorage.getItem(K(iso, "turnoEncerrado")), enc, "turnoEncerrado restaurado");
+  const outro = JSON.stringify({ id: "t10", inicio: 1, fim: 2, pausaMin: 0 }); localStorage.setItem(K(iso, "turnoEncerrado"), outro); p = await m.api.planejarRestauracao(s.id, {});
+  ok(p.conflitos.some((c) => c.motivo === "turno_encerrado_atual_existe"), "conflito reportado"); r = await m.api.restaurar(s.id, {}); eq(localStorage.getItem(K(iso, "turnoEncerrado")), outro, "NÃO sobrescreveu");
+  localStorage.removeItem(K(iso, "turnoEncerrado")); localStorage.setItem(K(iso, "turnos"), JSON.stringify([{ id: "t9", valor: 1 }])); p = await m.api.planejarRestauracao(s.id, { grupos: ["turno_encerrado"] });
+  ok(p.conflitos.some((c) => c.motivo === "turno_ja_registrado"), "id já registrado em turnos => conflito");
+});
+
+/* ---------- Proprietário ---------- */
+T("B1/B2 Dono: sem sessão e sem movix:sync => local; sessão validada online => autenticado (com id)", async (iso) => {
+  fixture(iso); let m = await novo(iso); let r = await m.api.garantir({ origem: "manual" }); eq((await m.api.listar())[0].dono.classe, "local", "local"); await m.fechar(); await limpar(iso + "x");
+  fixture(iso); m = await novo(iso, null, sessaoFalsa("u1")); r = await m.api.garantir({ origem: "diario" }); ok(r.ok, "criou");
+  const d = (await m.api.listar()).find((x) => x.id === r.id).dono; eq(d.classe, "autenticado", "autenticado"); eq(d.usuarioId, "u1", "id"); eq(d.validadoPor, "auth_v1_user_online", "validado online"); ok(m.w.__chamadas >= 1, "consultou /auth/v1/user");
+  ok(JSON.stringify(await idbTodos(iso, "snapshots")).indexOf("tok-de-teste") === -1 && JSON.stringify(await idbTodos(iso, "payloads")).indexOf("tok-de-teste") === -1, "nenhum token no IndexedDB");
+});
+T("B5/B6/B7/B8 Dono: rede, 401, id divergente, movix:sync diferente e sem sessão com usuário do sync => dono_desconhecido", async (iso) => {
+  const casos = [["rede", sessaoFalsa("u1", { rede: true }), null], ["401", sessaoFalsa("u1", { http: 401 }), null], ["idDivergente", sessaoFalsa("u1", { idServidor: "outro" }), null], ["sync diferente", sessaoFalsa("u1"), { usuario: "u2" }], ["sem sessão com usuario do sync", null, { usuario: "u1" }]];
+  for (const [nome, prep, sync] of casos) {
+    await limpar(iso); fixture(iso); if (sync) localStorage.setItem(SYNC(iso), JSON.stringify(sync));
+    const m = await novo(iso, null, prep || undefined), r = await m.api.garantir({ origem: "diario" }), d = (await m.api.listar()).find((x) => x.id === r.id);
+    ok(r.ok && d.dono.classe === "dono_desconhecido", nome + ": " + JSON.stringify(d && d.dono)); await m.fechar();
+  }
+});
+T("B3/B4 Auth não inicializada (renovação pendente / link de e-mail): dono_desconhecido; depois do movix:auth, validado", async (iso) => {
+  fixture(iso); const m = await novo(iso, null, (w) => { sessaoFalsa("u1")(w); w.sessao.expires_at = Math.floor(Date.now() / 1000) + 10; });   // vence em <60s => renovação pendente
+  const r1 = await m.api.garantir({ origem: "diario" }), d1 = (await m.api.listar()).find((x) => x.id === r1.id).dono; eq(d1.classe, "dono_desconhecido", "antes da inicialização"); eq(d1.motivo, "auth_nao_inicializada", "motivo");
+  m.w.sessao.expires_at = Math.floor(Date.now() / 1000) + 3600; m.w.document.dispatchEvent(new m.w.CustomEvent("movix:auth", { detail: { logado: true } })); localStorage.setItem(K(iso, "metaSemanal"), "3");
+  const r2 = await m.api.garantir({ origem: "diario" }), d2 = (await m.api.listar()).find((x) => x.id === r2.id).dono; eq(d2.classe, "autenticado", "depois do movix:auth"); await m.fechar(); await limpar(iso + "y");
+  const m2 = await novo(iso, null, (w) => { w.__movixLinkEmail = true; }); const r3 = await m2.api.garantir({ origem: "diario" }), d3 = (await m2.api.listar()).find((x) => x.id === r3.id).dono;
+  eq(d3.classe, "dono_desconhecido", "link de e-mail nunca é 'local'"); eq(d3.motivo, "fluxo_link_email", "motivo do link");
+});
+T("B9 Restauração valida de novo online (sem TTL) e bloqueia donos incompatíveis", async (iso) => {
+  const { f, id, m } = await (async () => { fixture(iso); let a = await novo(iso, null, sessaoFalsa("u1")); const s = await a.api.garantir({ origem: "manual" }); localStorage.setItem(K(iso, "metaSemanal"), "9"); return { f: null, id: s.id, m: a }; })();
+  const antes = m.w.__chamadas; const r = await m.api.restaurar(id, {}); ok(r.ok, "restaurou: " + JSON.stringify(r)); ok(m.w.__chamadas - antes >= 2, "consultou /auth/v1/user de novo (plano + antes de aplicar): " + (m.w.__chamadas - antes));
+  m.w.sessao = { user: { id: "u2" }, access_token: "t", expires_at: Math.floor(Date.now() / 1000) + 3600 }; m.w.document.dispatchEvent(new m.w.CustomEvent("movix:auth", { detail: { logado: true } }));
+  m.w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ id: "u2" }) }); const p = await m.api.planejarRestauracao(id, {}); ok(!p.ok && p.bloqueios.indexOf("outra_conta") !== -1, "outra conta bloqueada: " + JSON.stringify(p.bloqueios));
+  m.w.sessao = null; m.w.document.dispatchEvent(new m.w.CustomEvent("movix:auth", { detail: { logado: false } })); const p2 = await m.api.planejarRestauracao(id, {}); ok(!p2.ok, "autenticado A x sem sessão: bloqueado: " + JSON.stringify(p2.bloqueios));
+});
+T("B10 Sessão muda durante a validação da restauração: nada é aplicado", async (iso) => {
+  fixture(iso); const m = await novo(iso, null, sessaoFalsa("u1", { atraso: 400 })); const s = await m.api.garantir({ origem: "manual" }); localStorage.setItem(K(iso, "metaSemanal"), "9"); const antes = JSON.stringify(lsDados(iso));
+  const p = m.api.restaurar(s.id, {}); await dormir(150); m.w.sessao = { user: { id: "u2" }, access_token: "t", expires_at: Math.floor(Date.now() / 1000) + 3600 }; m.w.document.dispatchEvent(new m.w.CustomEvent("movix:auth", { detail: { logado: true } }));
+  const r = await p; ok(!r.ok, "bloqueada: " + JSON.stringify(r)); eq(JSON.stringify(lsDados(iso)), antes, "dados intactos");
+});
+T("B-matriz Compatibilidade de donos (função pura)", async (iso) => {
+  const m = await novo(iso), c = m.api._puro.donoCompativel, A = { classe: "autenticado", usuarioId: "a" }, B = { classe: "autenticado", usuarioId: "b" }, L = { classe: "local" }, D = { classe: "dono_desconhecido", motivo: "x" };
+  ok(c(A, A).ok && c(L, L).ok, "A×A e local×local permitidos"); ok(!c(A, B).ok && !c(A, L).ok && !c(L, A).ok && !c(D, A).ok && !c(A, D).ok && !c(D, D).ok && !c(L, D).ok, "demais combinações bloqueadas");
+});
+
+/* ---------- Migração do preventivo, política de falha e sincronização ---------- */
+T("T25 Migração do preventivo: única, 'dono_desconhecido', não saudável, original intacto; inválido não é importado", async (iso) => {
+  fixture(iso, {}); const pacote = { app: "Movix", versao: 2, movimentacoes: JSON.parse(lista(4, "p")), combustivel: [], manutencoes: [], turnos: [], objetivos: [], veiculos: [], metaSemanal: 300, metaMensal: 0 };
+  const bruto = JSON.stringify({ criadoEm: new Date(2026, 9, 1).toISOString(), usuario: "u7", pacote }); localStorage.setItem(PREV(iso), bruto);
+  let m = await novo(iso, { semAutomaticos: false }); await m.api.pronto(); const migr = (await m.api.listar({ incluirTodos: true })).filter((s) => s.origem === "migracao_preventivo");
+  eq(migr.length, 1, "um snapshot de migração"); eq(migr[0].dono.classe, "dono_desconhecido", "dono desconhecido"); eq(migr[0].qualidade, "nao_avaliado", "não avaliado"); ok(migr[0].parcial, "parcial");
+  eq(await sha(localStorage.getItem(PREV(iso))), await sha(bruto), "original intacto"); await m.fechar(); await dormir(150);
+  m = await novo(iso, { semAutomaticos: false }); await m.api.pronto(); eq((await m.api.listar({ incluirTodos: true })).filter((s) => s.origem === "migracao_preventivo").length, 1, "não duplica ao recarregar");
+  const p = await m.api.planejarRestauracao(migr[0].id, {}); ok(!p.ok, "restauração bloqueada (dono desconhecido)");
+  await m.fechar(); await limpar(iso + "z"); await limpar(iso); localStorage.setItem(PREV(iso), "{inválido"); fixture(iso);
+  m = await novo(iso, { semAutomaticos: false }); await m.api.pronto(); eq((await m.api.listar({ incluirTodos: true })).filter((s) => s.origem === "migracao_preventivo").length, 0, "inválido não importado"); eq(localStorage.getItem(PREV(iso)), "{inválido", "original intacto");
+});
+T("T26 Política de falha por operação: restauração bloqueia; demais pedem confirmação; automáticos só registram", async (iso) => {
+  fixture(iso); const m = await novo(iso, { falharGravacao: true }); let dialogos = 0; m.w.confirm = (t) => { dialogos++; return dialogos === 2; };
+  eq(await m.api.protegerOperacao("pre_ativacao_sync", "a"), false, "cancelar => não prossegue"); eq(await m.api.protegerOperacao("pre_remocao_copias", "b"), true, "confirmar => prossegue"); eq(dialogos, 2, "dois diálogos explícitos");
+  const rest = await m.api.restaurar("qualquer", {}); ok(!rest.ok, "restauração não prossegue"); const auto = await m.api.garantir({ origem: "diario" }); ok(!auto.ok && m.api.estado().ultimaFalha, "automático falha e registra");
+});
+T("T10 Operação de risco aguarda a gravação: com atraso, o chamador só segue depois de 'concluido'", async (iso) => {
+  fixture(iso); const m = await novo(iso, { atrasoGravacaoMs: 600 }); const t0 = Date.now(); const ok1 = await m.api.protegerOperacao("pre_importacao", "t");
+  ok(ok1 === true && Date.now() - t0 >= 550, "esperou a conclusão: " + (Date.now() - t0) + "ms"); eq((await m.api.listar()).length, 1, "existe um snapshot concluído");
+});
+T("T25b Prazo da operação de risco: estourar o prazo é FALHA (pede confirmação), nunca sucesso", async (iso) => {
+  fixture(iso); const m = await novo(iso, { atrasoGravacaoMs: 1500, prazoGarantirMs: 300 }); let d = 0; m.w.confirm = () => { d++; return false; };
+  const t0 = Date.now(); eq(await m.api.protegerOperacao("pre_importacao", "t"), false, "sem confirmação não prossegue"); eq(d, 1, "pediu confirmação"); ok(Date.now() - t0 < 1200, "não esperou o atraso inteiro");
+});
+T("D1-D8 Pausa da sincronização: espera ciclo em andamento, bloqueia com ciclo longo/ativa sem pausar, não toca no ciclo", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso); m.w.estadoSync = { ativo: true, usuario: "u" }; let pausou = 0; m.w.pausarSincronizacao = () => { pausou++; m.w.estadoSync.ativo = false; localStorage.setItem(SYNC(iso), JSON.stringify({ ativo: false })); };
+  m.w.sincronizando = true; setTimeout(() => { m.w.sincronizando = false; }, 700); const t0 = Date.now(); const r = await m.api.restaurar(id, {});
+  ok(r.ok && pausou === 1 && Date.now() - t0 >= 650, "pausou e esperou o ciclo terminar: " + JSON.stringify(r) + " " + (Date.now() - t0) + "ms");
+  eq(JSON.parse(localStorage.getItem(SYNC(iso))).ativo, false, "continua pausada (ativo=false persistido)");
+  const o2 = await preparaRestauracao(iso + "b"); o2.m.w.estadoSync = { ativo: true }; o2.m.w.pausarSincronizacao = undefined; const antes = JSON.stringify(lsDados(iso + "b")); const r2 = await o2.m.api.restaurar(o2.id, {});
+  ok(!r2.ok && r2.motivo === "pausar_indisponivel", "sem pausarSincronizacao: bloqueia: " + JSON.stringify(r2)); eq(JSON.stringify(lsDados(iso + "b")), antes, "nada tocado"); await limpar(iso + "b");
+  const o3 = await preparaRestauracao(iso + "c"); o3.m.w.sincronizando = true; const r3 = await o3.m.api.restaurar(o3.id, {}); ok(!r3.ok && r3.motivo === "sincronizacao_em_andamento", "ciclo longo bloqueia (20 s): " + JSON.stringify(r3)); await limpar(iso + "c");
+});
+T("D9 movix:sync bruto com ativo:true sem estado em memória: restauração bloqueada", async (iso) => {
+  const { id, m } = await preparaRestauracao(iso); localStorage.setItem(SYNC(iso), JSON.stringify({ ativo: true })); const antes = JSON.stringify(lsDados(iso));
+  const r = await m.api.restaurar(id, {}); ok(!r.ok && /sincronizacao_ativa/.test(r.motivo), "bloqueada: " + JSON.stringify(r)); eq(JSON.stringify(lsDados(iso)), antes, "nada tocado"); eq(localStorage.getItem(RECUP(iso)), null, "marcador limpo");
+});
+
+/* ---------- Carregador protegido (correções finais) ---------- */
+T("IN1 aguardarInicio(): com Web Locks resolve com 'ok' (lock obtido) e sem tela de bloqueio", async (iso) => {
+  const m = await novo(iso), r = await Promise.race([m.api.aguardarInicio(), dormir(3000).then(() => "tempo")]);
+  eq(r, "ok", "resolve com 'ok'"); eq(m.api.estado().participando, true, "participando"); eq(m.w.document.getElementById("movixBloqueio"), null, "sem tela de bloqueio");
+});
+T("IN2 aguardarInicio() sem Web Locks: NÃO resolve, mostra o bloqueio e não grava nada (nem LocalStorage nem IndexedDB)", async (iso) => {
+  fixture(iso); const antes = JSON.stringify(lsDados(iso)), m = await novo(iso, { semWebLocks: true, semAutomaticos: false });
+  const r = await Promise.race([m.api.aguardarInicio(), dormir(1500).then(() => "tempo")]);
+  eq(r, "tempo", "a promessa não resolve (o app nunca seria carregado)"); ok(!!m.w.document.getElementById("movixBloqueio"), "tela de bloqueio");
+  ok(/Web Locks/.test(m.w.document.getElementById("movixBloqueio").textContent) && /Chrome/.test(m.w.document.getElementById("movixBloqueio").textContent), "mensagem orienta navegador compatível");
+  eq(JSON.stringify(lsDados(iso)), antes, "LocalStorage intacto"); let existe = true; try { await idb(iso); } catch (e) { existe = false; } eq(existe, false, "o banco IndexedDB nem foi criado");
+  const rs = await m.api.restaurar("x", {}); ok(!rs.ok && rs.motivo === "sem_web_locks", "restauração indisponível: " + JSON.stringify(rs));
+  eq(m.api.syncAutorizada(), false, "sincronização bloqueada");
+});
+async function rodar() {
+  const tbody = document.querySelector("#tabela tbody"); tbody.innerHTML = ""; window.__resultados = []; let n = 0, passou = 0;
+  for (const t of testes) {
+    n++; falhasDoTeste = []; const iso = "t" + n + Math.random().toString(36).slice(2, 6); let erro = null;
+    const limite = t.nome.indexOf("D1-D8") === 0 ? 60000 : 25000;
+    try { await Promise.race([t.fn(iso), dormir(limite).then(() => { throw new Error("tempo esgotado"); })]); } catch (e) { erro = String(e && e.stack || e); }
+    const falhou = falhasDoTeste.length > 0 || erro; if (!falhou) passou++;
+    window.__resultados.push({ n, nome: t.nome, ok: !falhou, detalhes: falhasDoTeste.concat(erro ? [erro] : []) });
+    const tr = document.createElement("tr"); tr.className = falhou ? "falha" : "ok";
+    [n, t.nome, falhou ? "FALHOU" : "passou", falhasDoTeste.concat(erro ? [erro] : []).join(" | ")].forEach((x) => { const td = document.createElement("td"); td.textContent = x; tr.appendChild(td); }); tbody.appendChild(tr);
+    for (const sufixo of ["", "b", "c", "x", "y", "z"]) await limpar(iso + sufixo);
+  }
+  document.getElementById("resumo").textContent = passou + " de " + n + " passaram."; window.__fim = true;
+}
+document.getElementById("rodar").addEventListener("click", rodar);
+if (location.hash === "#auto") rodar();
+</script>
+</body>
+</html>

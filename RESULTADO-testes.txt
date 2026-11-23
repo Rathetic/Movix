@@ -1,0 +1,143 @@
+=== SUITE DO MODULO (testes/backup-local.teste.html no Chromium) ===
+tempo: 62s, testes: 47
+OK    1 T1 Criar snapshot: gravado, verificado e com os mesmos hashes do LocalStorage
+OK    2 T2 Apagar o LocalStorage: o snapshot continua disponível e verificável
+OK    3 T3 JSON corrompido: o novo snapshot é 'suspeito' e o último saudável é preservado
+OK    4 T4 Falha durante a gravação: nada parcial e snapshot anterior preservado
+OK    5 T5 Cota insuficiente: falha controlada, nada parcial, app continua
+OK    6 T6 Retenção 14/8/6 (+risco, último íntegro/saudável): união, sem substituição e nunca apag
+OK    7 T7 Snapshot corrompido após gravar: vira 'invalido' e a restauração é bloqueada
+OK    8 T13 IndexedDB indisponível: o app continua e a operação de risco exige confirmação explíci
+OK    9 T15 Snapshot capturado mas ainda não persistido não é backup
+OK    10 T18 Falha no SHA-256: nenhum snapshot e confirmação explícita
+OK    11 C1-C5 Inventário: ausentes/ilegíveis registrados, omissão silenciosa, chave desconhecida e
+OK    12 T35 turnoAtual e turnoEncerrado ilegíveis: capturados em bruto, nunca descartados
+OK    13 A1 Interrupção após T1: estado persistente correto; só a recuperação sob lock exclusivo pr
+OK    14 A1 Interrupção após T2: estado persistente correto; só a recuperação sob lock exclusivo pr
+OK    15 A1 Interrupção após T3: estado persistente correto; só a recuperação sob lock exclusivo pr
+OK    16 A1 Interrupção após T4: estado persistente correto; só a recuperação sob lock exclusivo pr
+OK    17 A1 Interrupção após T5: estado persistente correto; só a recuperação sob lock exclusivo pr
+OK    18 A3 Intermediário com payload adulterado: marcado 'invalido', nunca promovido
+OK    19 A4 Metadados sem payload: inválido; nunca aceito como completo
+OK    20 L2/L7 Aba viva no meio de T1-T5: outra aba NÃO assume (sem critério de tempo); depois da s
+OK    21 L4 Web Locks indisponível: restauração e recuperação bloqueadas; nada muda
+OK    22 T8 Restaurar snapshot válido: dados recuperados, hashes iguais, chaves fora do plano e mov
+OK    23 T9 Falha no snapshot pré-restauração: restauração bloqueada e dados atuais inalterados
+OK    24 T28 Falha ao aplicar (3ª chave): rollback validado, estado anterior restaurado
+OK    25 T29 Rollback também falha: recuperação pendente persistente; ativação recusada; depois res
+OK    26 T30 Restauração interrompida (marcador 'em_andamento' sem dono vivo): vira 'pendente' sob 
+OK    27 L1 Duas abas: a restauração é recusada na hora, sem tocar em nada
+OK    28 L5 Aba nova durante a restauração: espera, não participa até o fim
+OK    29 L5b Escrita durante a preparação: restauração abortada, nada aplicado, pré-snapshot preser
+OK    30 L6 Duas restaurações simultâneas na mesma aba: só uma executa
+OK    31 L6b Duas abas restaurando ao mesmo tempo: nunca duas executam
+OK    32 T33 turnoAtual: fora por padrão; só entra com incluirTurnoAtual e, havendo um ativo, com s
+OK    33 T34 turnoEncerrado: restaura sem conflito; com conflito não sobrescreve e reporta; ausênci
+OK    34 B1/B2 Dono: sem sessão e sem movix:sync => local; sessão validada online => autenticado (c
+OK    35 B5/B6/B7/B8 Dono: rede, 401, id divergente, movix:sync diferente e sem sessão com usuário 
+OK    36 B3/B4 Auth não inicializada (renovação pendente / link de e-mail): dono_desconhecido; depo
+OK    37 B9 Restauração valida de novo online (sem TTL) e bloqueia donos incompatíveis
+OK    38 B10 Sessão muda durante a validação da restauração: nada é aplicado
+OK    39 B-matriz Compatibilidade de donos (função pura)
+OK    40 T25 Migração do preventivo: única, 'dono_desconhecido', não saudável, original intacto; in
+OK    41 T26 Política de falha por operação: restauração bloqueia; demais pedem confirmação; automá
+OK    42 T10 Operação de risco aguarda a gravação: com atraso, o chamador só segue depois de 'concl
+OK    43 T25b Prazo da operação de risco: estourar o prazo é FALHA (pede confirmação), nunca sucess
+OK    44 D1-D8 Pausa da sincronização: espera ciclo em andamento, bloqueia com ciclo longo/ativa se
+OK    45 D9 movix:sync bruto com ativo:true sem estado em memória: restauração bloqueada
+OK    46 IN1 aguardarInicio(): com Web Locks resolve com 'ok' (lock obtido) e sem tela de bloqueio
+OK    47 IN2 aguardarInicio() sem Web Locks: NÃO resolve, mostra o bloqueio e não grava nada (nem L
+RESUMO: 47 de 47 passaram.
+
+=== SUITE DE INTEGRACAO (app real: index.html + backup-local.js + script.js + auth.js + sync.js + frete.js + lobby.js + nav.js) ===
+OK    A1 módulo carregou, sem erros de página
+OK    A2 snapshot de inicialização concluído, dono local, saudável
+OK    A3 captura bruta feita ANTES do app gravar
+OK    A4 estado: IDB ok, SHA ok, Web Locks, participando
+OK    A5 sync.js real funcionando (globais acessíveis)
+OK    A6 persist() registrado, sem falhas
+OK    A7 importarBackup: snapshot pre_importacao concluído ANTES de alterar
+OK    A8 importação continuou funcionando
+OK    A9 o snapshot pre_importacao guarda o estado ANTERIOR à importação
+OK    A10 plano de restauração ok (dono local x local)
+OK    A11 restauração real concluída com recarga
+OK    A12 dados restaurados idênticos ao snapshot, sem marcador pendente
+OK    A13 app sobe normalmente depois da restauração
+OK    B1 com sessão validada online o snapshot de início é 'autenticado' u1
+OK    B2 o módulo consultou /auth/v1/user e o sync.js ficou ativo
+OK    B3 restauração com sync ATIVA: pausou e concluiu
+OK    B4 movix:sync.ativo=false persistido depois da restauração e do recarregamento
+OK    B5 sync não está ativa em memória depois do recarregamento
+OK    B6 nenhum gatilho inicia sincronização depois da pausa
+OK    B7 metaSemanal voltou ao valor do snapshot
+OK    B8 ativarSincronizacao: snapshot pre_ativacao_sync concluído antes do preventivo
+OK    B9 sem erros de página no cenário com sync real
+OK    C1 duas abas reais: restauração recusada (outra_aba)
+OK    C2 depois de fechar a outra aba, a restauração prossegue
+OK    A-1 aba nova durante a restauração: script.js/auth.js/sync.js NÃO executaram
+OK    A-1b ela aguarda o lock (não participa) e mostra o aviso de espera
+OK    A-1c nenhuma gravação do app em motograna:*/movix:* enquanto aguarda
+OK    A-1d a restauração na aba A concluiu
+OK    A-1e B só obteve o lock DEPOIS de A liberar o exclusivo
+OK    A-1f B iniciou o app depois do lock (appLiberado <= appCarregado) e inicializou normalmente
+OK    A-1g B vê o estado restaurado (a captura foi refeita depois do lock)
+      linha do tempo A-1 (ms desde o exclusivo): exclusivo=0 fimA=3531 lockB=3531 appB=3587 snapshotB=3650
+OK    A-2 sem lock: nenhuma gravação em motograna:*/movix:* causada pela inicialização
+OK    A-2b sem lock: nenhuma função do app existe (nada executou)
+OK    A-2c sem lock: a interface mostra o estado de espera (e o conteúdo fica coberto)
+OK    A-2d depois da liberação o app inicia e TODAS as gravações são posteriores à aquisição do lock
+OK    A-3 sem navigator.locks: o app NÃO inicializa (nenhuma função/efeito dos seis scripts)
+OK    A-3a os seis scripts funcionais não foram sequer injetados na página
+OK    A-3b nenhuma gravação no LocalStorage durante a inicialização (nem no IndexedDB)
+OK    A-3c tela de bloqueio visível, explica o recurso ausente e orienta a usar navegador compatível
+OK    A-3d sem Web Locks: nenhuma requisição ao Supabase (a sincronização não roda)
+OK    A-3e sem Web Locks: a restauração permanece indisponível
+OK    A-3f sem Web Locks: sync não tem estado (sync.js nem existe) e nada foi gravado mesmo depois dos gatilhos
+OK    A-7 com Web Locks disponível o fluxo normal continua funcionando
+OK    B-1 HTTP 404 ao carregar backup-local.js: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-1 HTTP 404 ao carregar backup-local.js: tela de erro visível, compreensível e com botão
+OK    B-1c o botão 'Tentar novamente' funciona sem os scripts do app (recarrega e continua bloqueado)
+OK    B-1b falha de rede (requisição abortada): nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-1b falha de rede (requisição abortada): tela de erro visível, compreensível e com botão
+OK    B-2 erro de execução no módulo (throw no topo): nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-2 erro de execução no módulo (throw no topo): tela de erro visível, compreensível e com botão
+OK    B-2b erro de sintaxe no módulo: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-2b erro de sintaxe no módulo: tela de erro visível, compreensível e com botão
+OK    B-2c erro dentro de construir() (módulo real cai no stub): nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-2c erro dentro de construir() (módulo real cai no stub): tela de erro visível, compreensível e com botão
+OK    B-3 ausência do objeto MovixBackup: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-3 ausência do objeto MovixBackup: tela de erro visível, compreensível e com botão
+OK    B-4 ausência de aguardarInicio: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-4 ausência de aguardarInicio: tela de erro visível, compreensível e com botão
+OK    B-4b aguardarInicio existe mas não é função: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-4b aguardarInicio existe mas não é função: tela de erro visível, compreensível e com botão
+OK    B-5 a promessa de aguardarInicio REJEITA: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-5 a promessa de aguardarInicio REJEITA: tela de erro visível, compreensível e com botão
+OK    B-5b aguardarInicio lança exceção síncrona: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-5b aguardarInicio lança exceção síncrona: tela de erro visível, compreensível e com botão
+OK    B-5c a promessa resolve com algo diferente de 'ok' (sem_web_locks): nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-5c a promessa resolve com algo diferente de 'ok' (sem_web_locks): tela de erro visível, compreensível e com botão
+OK    B-5d a promessa resolve com true (não é 'ok'): nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-5d a promessa resolve com true (não é 'ok'): tela de erro visível, compreensível e com botão
+OK    B-5e aguardarInicio não devolve promessa: nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-5e aguardarInicio não devolve promessa: tela de erro visível, compreensível e com botão
+OK    B-6 módulo que trava sem responder nem mostrar espera (vigilância de 4 s): nenhum dos seis scripts carregou/executou; nenhuma gravação; nenhuma requisição ao Supabase
+OK    B-6 módulo que trava sem responder nem mostrar espera (vigilância de 4 s): tela de erro visível, compreensível e com botão
+OK    B-1 backup inicial em andamento: nenhuma sincronização (zero chamadas ao REST) mesmo com todos os gatilhos
+OK    B-1b consultas do sync.js foram bloqueadas (a porta foi realmente exercitada)
+OK    B-2 após 'concluido' a primeira sincronização começa (e só depois do snapshot)
+OK    B-5 a liberação dispara no máximo UMA primeira sincronização
+      linha do tempo B-1/B-2 (ms desde o carregamento): lock=265 appCarregado=331 snapshotConcluido=4451 primeiraSyncSolicitada=4451 primeiraRequisicaoREST=4459
+OK    B-1c ordem: lock <= app carregado <= snapshot concluído <= primeira sincronização
+OK    B-5b gatilhos posteriores continuam funcionando normalmente (novo ciclo ao disparar 'online')
+OK    B-1d sem erros de página
+OK    B-2c snapshot inicial concluído: a primeira sincronização começou (há chamadas ao REST) depois dele
+OK    B-5c exatamente 1 primeiro ciclo (um GET de veiculos) e 1 liberação
+OK    B-3 backup inicial FALHOU: sincronização automática permanece bloqueada (zero chamadas ao REST)
+OK    B-4 gatilhos testados: inicialização, online, visibilitychange, movix:auth, botão 'Sincronizar agora', escrita no LocalStorage, intervalo de 60 s e ativação manual
+OK    B-3b o app continua utilizável localmente
+OK    B-6 inicial falhou: nada sincroniza
+OK    B-6b ativação manual: o snapshot pre_ativacao_sync (concluído) libera a sincronização
+OK    B-6c sem erros de página
+
+RESUMO INTEGRAÇÃO: 87 de 87 passaram; 0 falharam
