@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movix – Sua jornada. Seu dinheiro. Seu controle.</title>
+  <meta name="theme-color" content="#07050d">
+  <meta name="description" content="Movix: controle financeiro para motoboys, motoristas de aplicativo e entregadores.">
+  <!-- Favicon e ícones (caminhos relativos: funcionam no GitHub Pages e no domínio próprio) -->
+  <link rel="icon" href="img/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="img/favicon-16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="img/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="preload" href="fonts/inter-400.woff" as="font" type="font/woff" crossorigin>
+  <script src="config.js"></script>
+  <script src="capacitor.js"></script>
+  <script>
+    /* Decide a tela ANTES de desenhar a página: sem login e com Supabase configurado -> Lobby. */
+    (function () {
+      var cfg = typeof MOVIX_CONFIG === "object" && MOVIX_CONFIG ? MOVIX_CONFIG : {};
+      var temSessao = false, modoLocal = false;
+      try { temSessao = !!localStorage.getItem("movix:sessao"); modoLocal = localStorage.getItem("movix:modo-local") === "1"; } catch (e) {}
+      var link = /access_token|error_description/.test(location.hash); // link de e-mail (confirmação/recuperação)
+      window.__movixLinkEmail = link;
+      if (cfg.supabaseUrl && cfg.supabaseAnonKey && !temSessao && !modoLocal) {
+        document.documentElement.classList.add("lobby-ativo");
+        if (link) document.documentElement.classList.add("tela-auth");
+      }
+    })();
+  </script>
+</head>
+<body>
+  <!-- Ícones: sprite SVG local (traço no estilo Lucide, 24x24). Uso: <svg class="icone" aria-hidden="true"><use href="#i-nome"/></svg> -->
+  <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="i-clipboard-list" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></symbol>
+    <symbol id="i-trending-up" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></symbol>
+    <symbol id="i-chart-column" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
+    <symbol id="i-fuel" viewBox="0 0 24 24"><line x1="3" x2="15" y1="22" y2="22"/><line x1="4" x2="14" y1="9" y2="9"/><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2a2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></symbol>
+    <symbol id="i-car" viewBox="0 0 24 24"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></symbol>
+    <symbol id="i-timer" viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></symbol>
+    <symbol id="i-piggy-bank" viewBox="0 0 24 24"><path d="M19 5c-1.5 0-2.8 1.4-3 2-3.5-1.5-11-.3-11 5 0 1.8 0 3 2 4.5V20h4v-2h3v2h4v-4c1-.5 1.7-1 2-2h2v-4h-2c0-1-.5-1.5-1-2V5z"/><path d="M2 9v1c0 1.1.9 2 2 2h1"/><path d="M16 11h.01"/></symbol>
+    <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+    <symbol id="i-hard-drive" viewBox="0 0 24 24"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+    <symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-square-pen" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></symbol>
+    <symbol id="i-house" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></symbol>
+    <symbol id="i-banknote" viewBox="0 0 24 24"><rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></symbol>
+    <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+    <symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
+    <symbol id="i-map-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-message-circle" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  </svg>
+  <!-- LOBBY: tela inicial para quem não está logado (conteúdo ilustrativo, sem dados reais) -->
+  <div id="lobby" class="lobby">
+    <main class="lobby-conteudo">
+      <div class="lobby-marca"><img src="img/logo-movix-finance-540.png" width="540" height="317" alt="MOVIX Finance" fetchpriority="high"></div>
+      <h1>Seu corre. Seu dinheiro. <span class="destaque">Seu controle.</span></h1>
+      <p class="lobby-sub">Organize seus ganhos, acompanhe seus gastos e tenha o controle da sua vida financeira em um só lugar.</p>
+
+      <div class="lobby-previa" aria-hidden="true">
+        <div class="cards">
+          <article class="card card-lucro"><h2>Lucro líquido</h2><strong>R$ 177,00</strong></article>
+          <article class="card card-ganho"><h2>Ganhos do dia</h2><strong>R$ 245,00</strong></article>
+          <article class="card card-despesa"><h2>Despesas</h2><strong>R$ 68,00</strong></article>
+          <article class="card card-comb"><h2>⛽ Combustível</h2><strong>R$ 32,00</strong><small>100 km • 40 km/L</small></article>
+        </div>
+        <small class="legenda">Exemplo ilustrativo. Seus dados reais aparecem depois do login.</small>
+      </div>
+
+      <div class="lobby-acoes">
+        <button type="button" id="lobbyEntrar" class="btn-principal">Entrar na minha conta</button>
+        <button type="button" id="lobbyCriar" class="btn-secundario">Criar minha conta</button>
+      </div>
+      <button type="button" id="lobbyLocal" class="btn-link">Usar sem conta (só neste aparelho)</button>
+    </main>
+    <footer class="lobby-rodape">Feito para quem vive do corre.</footer>
+  </div>
+
+  <header class="topo">
+    <div class="marca">
+      <h1><img src="img/logo-movix-finance-540.png" width="540" height="317" alt="MOVIX Finance" decoding="async"></h1>
+    </div>
+    <p>Sua jornada. Seu dinheiro. Seu controle.</p>
+  </header>
+
+  <!-- NAVEGAÇÃO (etapa 2). Computador/tablet: barra lateral. Celular: barra inferior + "Mais".
+       Cada link usa o endereço #/rota; o nav.js mostra só a página escolhida (ver data-pagina nas seções). -->
+  <nav class="menu" id="menuLateral" aria-label="Navegação principal">
+    <div class="brand">
+      <img class="brand-completo" src="img/logo-movix-finance-540.png" width="540" height="317" alt="MOVIX Finance" decoding="async">
+      <img class="brand-icone" src="img/apple-touch-icon.png" width="40" height="40" alt="MOVIX Finance" decoding="async">
+    </div>
+    <div class="menu-grupo" role="group" aria-label="Principal">
+      <p class="menu-titulo" aria-hidden="true">Principal</p>
+      <a href="#/inicio" data-rota="inicio"><svg class="icone" aria-hidden="true"><use href="#i-house"/></svg><span class="rotulo">Início</span></a>
+      <a href="#/jornada" data-rota="jornada"><svg class="icone" aria-hidden="true"><use href="#i-timer"/></svg><span class="rotulo">Jornada</span></a>
+    </div>
+    <div class="menu-grupo" role="group" aria-label="Financeiro">
+      <p class="menu-titulo" aria-hidden="true">Financeiro</p>
+      <a href="#/financeiro" data-rota="financeiro"><svg class="icone" aria-hidden="true"><use href="#i-wallet"/></svg><span class="rotulo">Financeiro</span></a>
+      <a href="#/graficos" data-rota="graficos"><svg class="icone" aria-hidden="true"><use href="#i-chart-column"/></svg><span class="rotulo">Gráficos</span></a>
+      <a href="#/cofrinho" data-rota="cofrinho"><svg class="icone" aria-hidden="true"><use href="#i-piggy-bank"/></svg><span class="rotulo">Cofrinho</span></a>
+      <a href="#/recordes" data-rota="recordes"><svg class="icone" aria-hidden="true"><use href="#i-trophy"/></svg><span class="rotulo">Recordes</span></a>
+    </div>
+    <div class="menu-grupo" role="group" aria-label="Ferramentas">
+      <p class="menu-titulo" aria-hidden="true">Ferramentas</p>
+      <a href="#/frete" data-rota="frete"><svg class="icone" aria-hidden="true"><use href="#i-route"/></svg><span class="rotulo">Frete</span></a>
+      <a href="#/combustivel" data-rota="combustivel"><svg class="icone" aria-hidden="true"><use href="#i-fuel"/></svg><span class="rotulo">Combustível</span></a>
+      <a href="#/garagem" data-rota="garagem"><svg class="icone" aria-hidden="true"><use href="#i-car"/></svg><span class="rotulo">Garagem</span></a>
+    </div>
+    <div class="menu-grupo" role="group" aria-label="Sistema">
+      <p class="menu-titulo" aria-hidden="true">Sistema</p>
+      <a href="#/conta" data-rota="conta"><svg class="icone" aria-hidden="true"><use href="#i-user"/></svg><span class="rotulo">Conta</span></a>
+      <a href="#/backup" data-rota="backup"><svg class="icone" aria-hidden="true"><use href="#i-hard-drive"/></svg><span class="rotulo">Backup</span></a>
+    </div>
+    <button type="button" id="btnMenuRecolher" class="menu-recolher" aria-expanded="true" aria-label="Recolher menu"><svg class="icone" aria-hidden="true"><use href="#i-panel-left"/></svg><span class="rotulo">Recolher menu</span></button>
+  </nav>
+
+  <nav class="menu-inferior" id="menuInferior" aria-label="Navegação principal">
+    <a href="#/inicio" data-rota="inicio"><svg class="icone" aria-hidden="true"><use href="#i-house"/></svg><span>Início</span></a>
+    <a href="#/jornada" data-rota="jornada"><svg class="icone" aria-hidden="true"><use href="#i-timer"/></svg><span>Jornada</span></a>
+    <a href="#/frete" data-rota="frete"><svg class="icone" aria-hidden="true"><use href="#i-route"/></svg><span>Frete</span></a>
+    <a href="#/financeiro" data-rota="financeiro"><svg class="icone" aria-hidden="true"><use href="#i-wallet"/></svg><span>Financeiro</span></a>
+    <button type="button" id="btnMais" aria-haspopup="dialog" aria-expanded="false" aria-controls="menuMais"><svg class="icone" aria-hidden="true"><use href="#i-ellipsis"/></svg><span>Mais</span></button>
+  </nav>
+  <div class="mais-fundo" id="maisFundo" hidden></div>
+  <div class="menu-mais" id="menuMais" role="dialog" aria-modal="true" aria-label="Mais opções" hidden>
+    <div class="mais-puxador" aria-hidden="true"></div>
+    <div class="mais-grade">
+      <a href="#/graficos" data-rota="graficos"><svg class="icone" aria-hidden="true"><use href="#i-chart-column"/></svg><span>Gráficos</span></a>
+      <a href="#/combustivel" data-rota="combustivel"><svg class="icone" aria-hidden="true"><use href="#i-fuel"/></svg><span>Combustível</span></a>
+      <a href="#/garagem" data-rota="garagem"><svg class="icone" aria-hidden="true"><use href="#i-car"/></svg><span>Garagem</span></a>
+      <a href="#/cofrinho" data-rota="cofrinho"><svg class="icone" aria-hidden="true"><use href="#i-piggy-bank"/></svg><span>Cofrinho</span></a>
+      <a href="#/recordes" data-rota="recordes"><svg class="icone" aria-hidden="true"><use href="#i-trophy"/></svg><span>Recordes</span></a>
+      <a href="#/conta" data-rota="conta"><svg class="icone" aria-hidden="true"><use href="#i-user"/></svg><span>Conta</span></a>
+      <a href="#/backup" data-rota="backup"><svg class="icone" aria-hidden="true"><use href="#i-hard-drive"/></svg><span>Backup</span></a>
+    </div>
+  </div>
+
+  <main class="container">
+
+    <!-- 0. PALAVRA DE INCENTIVO -->
+    <section data-pagina="inicio" class="versiculo" aria-label="Palavra de incentivo">
+      <p id="textoVersiculo"></p>
+      <small id="refVersiculo"></small>
+      <button type="button" id="btnOutroVersiculo" class="btn-link">Outra frase 🔄</button>
+    </section>
+
+    <!-- 1. DASHBOARD: totais gerais (histórico completo, sem filtro de período) -->
+    <p data-pagina="inicio" id="alertaManutencao" class="alerta" hidden></p>
+
+    <section data-pagina="inicio" class="cards" id="sec-resumo" aria-label="Resumo financeiro">
+      <article class="card card-lucro">
+        <h2>Lucro líquido (total)</h2>
+        <strong id="totalLucro">R$ 0,00</strong>
+      </article>
+      <article class="card card-ganho">
+        <h2>Total de ganhos</h2>
+        <strong id="totalGanhos">R$ 0,00</strong>
+      </article>
+      <article class="card card-despesa">
+        <h2>Total de despesas</h2>
+        <strong id="totalDespesas">R$ 0,00</strong>
+      </article>
+    </section>
+
+    <section data-pagina="inicio" class="painel" id="sec-alertas">
+      <h2><svg class="icone" aria-hidden="true"><use href="#i-bell"/></svg> Central de alertas</h2>
+      <ul id="listaAlertas" class="historico"></ul>
+    </section>
+
+    <section data-pagina="inicio" class="painel" id="sec-hoje">
+      <h2><svg class="icone" aria-hidden="true"><use href="#i-clipboard-list"/></svg> Resumo de hoje</h2>
+      <div id="resumoDia" class="periodo"></div>
+    </section>
+
+    <!-- FINANCEIRO (etapa 5: redesign visual; ids, campos e comportamentos preservados) -->
+    <section data-pagina="financeiro" class="financeiro">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-wallet"/></svg> Financeiro</h2>
+          <p class="jor-sub">Seus ganhos e despesas por período, metas e todas as movimentações.</p>
+        </div>
+      </header>
+
+      <div class="jor-card fin-relatorio">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-clipboard-list"/></svg> Relatório financeiro</h3>
+        <div class="relatorio" id="relatorio"></div>
+      </div>
+
+      <div class="fin-grade">
+        <div class="jor-card fin-lancar">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-plus"/></svg> Nova movimentação</h3>
+          <form id="formMovimentacao" novalidate>
+            <div class="tipo-toggle" role="radiogroup" aria-label="Tipo">
+              <label class="opt-ganho">
+                <input type="radio" name="tipo" value="ganho" checked> Ganho
+              </label>
+              <label class="opt-despesa">
+                <input type="radio" name="tipo" value="despesa"> Despesa
+              </label>
+            </div>
+
+            <label for="descricao">Descrição</label>
+            <input type="text" id="descricao" maxlength="60" placeholder="Ex.: Corridas da noite">
+
+            <div class="linha">
+              <div>
+                <label for="categoria">Categoria</label>
+                <select id="categoria"></select>
+              </div>
+              <div>
+                <label for="valor">Valor (R$)</label>
+                <input type="number" id="valor" step="0.01" min="0.01" inputmode="decimal" placeholder="0,00">
+              </div>
+              <div>
+                <label for="data">Data</label>
+                <input type="date" id="data">
+              </div>
+            </div>
+
+            <p id="mensagemErro" class="erro" role="alert"></p>
+            <button type="submit" class="btn-principal">Registrar</button>
+          </form>
+        </div>
+
+        <div class="fin-metas">
+          <div class="jor-card">
+            <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-target"/></svg> Meta semanal</h3>
+            <p class="dica">Defina quanto de lucro líquido você quer fazer por semana (segunda a domingo). Deixe em branco para remover a meta.</p>
+            <div class="meta-form">
+              <input type="number" id="campoMeta" step="0.01" min="0" inputmode="decimal" placeholder="Ex.: 800,00">
+              <button type="button" id="btnSalvarMeta" class="btn-secundario">Salvar meta</button>
+            </div>
+            <p id="mensagemMeta" class="aviso" role="status"></p>
+            <div id="progressoMeta" hidden>
+              <div class="barra"><div class="barra-preenchimento" id="barraMeta"></div></div>
+              <p id="textoProgresso" class="progresso-texto"></p>
+              <p id="textoDiario" class="dica"></p>
+            </div>
+          </div>
+
+          <div class="jor-card">
+            <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-target"/></svg> Meta mensal</h3>
+            <p class="dica">Projeções baseadas só nos seus registros reais. Deixe em branco para remover a meta.</p>
+            <div class="meta-form">
+              <input type="number" id="campoMetaMensal" step="0.01" min="0" inputmode="decimal" placeholder="Ex.: 3500,00">
+              <button type="button" id="btnSalvarMetaMensal" class="btn-secundario">Salvar meta</button>
+            </div>
+            <p id="mensagemMetaMensal" class="aviso" role="status"></p>
+            <div id="resultadoMetaMensal" class="periodo resultado"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="jor-card fin-historico">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-history"/></svg> Histórico</h3>
+        <ul id="listaHistorico" class="historico"></ul>
+      </div>
+    </section>
+
+    <section data-pagina="inicio" class="painel">
+      <h2><svg class="icone" aria-hidden="true"><use href="#i-trending-up"/></svg> Desempenho</h2>
+      <div id="blocoDesempenho" class="periodo"></div>
+    </section>
+
+    <!-- GRÁFICOS (etapa 6: redesign visual; ids, filtros e canvas preservados) -->
+    <section data-pagina="graficos" class="graficos" id="sec-graficos">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-chart-column"/></svg> Gráficos</h2>
+          <p class="jor-sub">Veja seus ganhos, despesas e lucro ao longo do tempo.</p>
+        </div>
+      </header>
+
+      <div class="jor-card graf-controles">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-chart-column"/></svg> Visualização</h3>
+        <div class="abas" id="abasGrafico">
+          <button type="button" class="aba ativa" data-grafico="barras">Ganhos x Despesas</button>
+          <button type="button" class="aba" data-grafico="lucro">Lucro</button>
+          <button type="button" class="aba" data-grafico="evolucao">Evolução</button>
+          <button type="button" class="aba" data-grafico="categorias">Despesas por categoria</button>
+        </div>
+        <div class="linha-2">
+          <div>
+            <label for="filtroPeriodo">Período</label>
+            <select id="filtroPeriodo">
+              <option value="semana">Esta semana</option>
+              <option value="mes" selected>Este mês</option>
+              <option value="tudo">Todo o período</option>
+            </select>
+          </div>
+          <div>
+            <label for="filtroAgrupar">Agrupar por</label>
+            <select id="filtroAgrupar">
+              <option value="dia" selected>Dia</option>
+              <option value="semana">Semana</option>
+              <option value="mes">Mês</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="jor-card graf-painel">
+        <div class="graf-moldura">
+          <div class="grafico-wrap">
+            <canvas id="canvasGrafico"></canvas>
+            <div id="tooltipGrafico" class="tooltip" hidden></div>
+          </div>
+          <div id="graficoCategorias" hidden></div>
+        </div>
+        <p id="legendaGrafico" class="dica graf-legenda"><span class="graf-chip graf-chip-g">Ganhos</span><span class="graf-chip graf-chip-d">Despesas</span><span class="graf-dica-toque">Toque ou passe o mouse nas barras para ver os valores.</span></p>
+      </div>
+    </section>
+
+    <!-- COMBUSTÍVEL (etapa 7: redesign visual; ids, campos e botões preservados) -->
+    <section data-pagina="combustivel" class="comb" id="sec-combustivel">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-fuel"/></svg> Combustível</h2>
+          <p class="jor-sub">Calcule o custo de combustível de um trajeto e registre seus abastecimentos.</p>
+        </div>
+      </header>
+
+      <form id="formCombustivel" class="comb-grade" novalidate>
+        <div class="jor-card comb-dados">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-route"/></svg> Trajeto</h3>
+          <div class="linha-4">
+            <div><label for="kmInicial">Km inicial</label><input type="number" id="kmInicial" min="0" step="0.1" inputmode="decimal"></div>
+            <div><label for="kmFinal">Km final</label><input type="number" id="kmFinal" min="0" step="0.1" inputmode="decimal"></div>
+            <div><label for="consumo">Consumo (km/L)</label><input type="number" id="consumo" min="0.1" step="0.1" inputmode="decimal"></div>
+            <div><label for="precoLitro">Preço do litro (R$)</label><input type="number" id="precoLitro" min="0.01" step="0.01" inputmode="decimal"></div>
+          </div>
+          <label for="dataCombustivel">Data</label>
+          <input type="date" id="dataCombustivel">
+        </div>
+
+        <div class="jor-card comb-calculo">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-clipboard-list"/></svg> Cálculo do trajeto</h3>
+          <div id="resultadoCombustivel" class="periodo resultado"></div>
+          <label class="check"><input type="checkbox" id="lancarCombustivel" checked> Lançar automaticamente nas despesas (desmarque se for lançar à mão)</label>
+          <p id="mensagemCombustivel" class="aviso" role="status"></p>
+          <button type="submit" class="btn-principal">Salvar cálculo</button>
+        </div>
+      </form>
+
+      <div class="jor-card comb-historico">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-history"/></svg> Histórico de abastecimentos</h3>
+        <ul id="listaCombustivel" class="historico"></ul>
+      </div>
+    </section>
+
+    <!-- CALCULADORA DE FRETE POR KM (etapa 4: redesign visual; ids, campos e botões preservados) -->
+    <section data-pagina="frete" class="frete" id="sec-frete">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-route"/></svg> Frete</h2>
+          <p class="jor-sub">Calcule o valor de uma corrida particular ou viagem: distância pela estrada × valor por km.</p>
+        </div>
+      </header>
+
+      <form id="formFrete" class="frete-grade" novalidate>
+
+        <div class="jor-card frete-rota">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-map-pin"/></svg> Rota</h3>
+          <div class="abas" id="abasFrete" role="group" aria-label="Como informar a distância">
+            <button type="button" class="aba ativa" data-modo="auto" aria-pressed="true"><svg class="icone" aria-hidden="true"><use href="#i-map-pin"/></svg> Pelo mapa</button>
+            <button type="button" class="aba" data-modo="manual" aria-pressed="false"><svg class="icone" aria-hidden="true"><use href="#i-pencil"/></svg> Distância manual</button>
+          </div>
+          <label for="freteOrigem">Origem</label>
+          <div class="campo-busca">
+            <input type="text" id="freteOrigem" autocomplete="off" placeholder="Cidade, bairro ou endereço">
+            <ul class="sugestoes" id="freteSugOrigem" hidden></ul>
+          </div>
+          <label for="freteDestino">Destino</label>
+          <div class="campo-busca">
+            <input type="text" id="freteDestino" autocomplete="off" placeholder="Cidade, bairro ou endereço">
+            <ul class="sugestoes" id="freteSugDestino" hidden></ul>
+          </div>
+          <div id="freteBlocoAuto">
+            <button type="button" class="btn-secundario" id="freteCalcular">Calcular distância</button>
+          </div>
+          <div id="freteBlocoManual" hidden>
+            <label for="freteDistManual">Distância de ida (km)</label>
+            <input type="number" id="freteDistManual" min="0" step="0.1" inputmode="decimal" placeholder="Ex.: 142,5">
+          </div>
+          <p id="mensagemFrete" class="aviso" role="status"></p>
+        </div>
+
+        <div class="jor-card frete-valores">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-banknote"/></svg> Valores</h3>
+          <div class="linha-2">
+            <div><label for="fretePrecoKm">Valor por km (R$)</label><input type="number" id="fretePrecoKm" min="0.01" step="0.01" inputmode="decimal"></div>
+            <div><label for="fretePedagio">Pedágio por trecho (R$)</label><input type="number" id="fretePedagio" min="0" step="0.01" inputmode="decimal" placeholder="0,00"></div>
+          </div>
+          <label for="freteTaxa">Taxa adicional (R$, opcional)</label>
+          <input type="number" id="freteTaxa" min="0" step="0.01" inputmode="decimal" placeholder="0,00">
+          <label class="check"><input type="checkbox" id="freteIdaVolta"> Ida e volta (dobra a distância)</label>
+        </div>
+
+        <div class="jor-card frete-orcamento">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-clipboard-list"/></svg> Orçamento</h3>
+          <div id="resultadoFrete" class="periodo resultado"></div>
+          <div class="botoes-backup" id="acoesFrete" hidden>
+            <button type="button" class="btn-secundario" id="freteCopiar"><svg class="icone" aria-hidden="true"><use href="#i-copy"/></svg> Copiar orçamento</button>
+            <button type="button" class="btn-principal" id="freteWhats"><svg class="icone" aria-hidden="true"><use href="#i-message-circle"/></svg> Enviar no WhatsApp</button>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <!-- GARAGEM (etapa 8: redesign visual; ids, formulários e botões preservados) -->
+    <section data-pagina="garagem" class="gar" id="sec-manutencao">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-car"/></svg> Garagem</h2>
+          <p class="jor-sub">Seu veículo, lembretes de manutenção e histórico de serviços.</p>
+        </div>
+      </header>
+
+      <div class="gar-topo">
+        <div class="jor-card gar-veiculo">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-car"/></svg> Veículo</h3>
+          <label for="veiculoAtivo">Veículo selecionado</label>
+          <select id="veiculoAtivo"></select>
+          <div id="resumoVeiculo" class="periodo resultado"></div>
+          <p id="kmAtual" class="dica"></p>
+          <details class="novo-veiculo">
+            <summary><svg class="icone" aria-hidden="true"><use href="#i-plus"/></svg> Cadastrar novo veículo</summary>
+            <form id="formVeiculo" novalidate>
+              <div class="linha-2">
+                <div><label for="tipoVeic">Tipo</label><select id="tipoVeic"><option>Motocicleta</option><option>Carro</option><option>Caminhão</option><option>Outro</option></select></div>
+                <div><label for="apelidoVeic">Apelido</label><input type="text" id="apelidoVeic" maxlength="30" placeholder="Ex.: Fazer 250"></div>
+              </div>
+              <div class="linha-2">
+                <div><label for="marcaVeic">Marca</label><input type="text" id="marcaVeic" maxlength="30"></div>
+                <div><label for="modeloVeic">Modelo</label><input type="text" id="modeloVeic" maxlength="30"></div>
+              </div>
+              <div class="linha">
+                <div><label for="anoVeic">Ano</label><input type="number" id="anoVeic" min="1950" step="1" inputmode="numeric"></div>
+                <div><label for="placaVeic">Placa (opcional)</label><input type="text" id="placaVeic" maxlength="8"></div>
+                <div><label for="kmVeic">Km atual</label><input type="number" id="kmVeic" min="0" step="1" inputmode="numeric"></div>
+              </div>
+              <button type="submit" class="btn-secundario btn-largo-topo">Salvar veículo</button>
+            </form>
+            <p id="mensagemVeiculo" class="aviso" role="status"></p>
+          </details>
+          <button type="button" id="btnExcluirVeiculo" class="btn-link">Excluir o veículo selecionado</button>
+        </div>
+
+        <div class="jor-card gar-lembretes">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-bell"/></svg> Lembretes</h3>
+          <ul id="listaLembretes" class="historico"></ul>
+        </div>
+      </div>
+
+      <div class="jor-card gar-manut">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-wrench"/></svg> Registrar manutenção</h3>
+        <form id="formManutencao" novalidate>
+          <div class="linha-2">
+            <div><label for="tipoManut">Tipo</label><select id="tipoManut"></select></div>
+            <div><label for="descManut">Descrição (obrigatória em "Outra")</label><input type="text" id="descManut" maxlength="60" placeholder="Ex.: Troca de vela"></div>
+          </div>
+          <div class="linha">
+            <div><label for="valorManut">Valor (R$)</label><input type="number" id="valorManut" min="0" step="0.01" inputmode="decimal"></div>
+            <div><label for="dataManut">Data</label><input type="date" id="dataManut"></div>
+            <div><label for="kmManut">Km do veículo</label><input type="number" id="kmManut" min="0" step="1" inputmode="numeric"></div>
+          </div>
+          <div class="linha-2">
+            <div><label for="lembreteKm">Lembrar daqui a (km) – opcional</label><input type="number" id="lembreteKm" min="1" step="1" inputmode="numeric" placeholder="Ex.: 3000"></div>
+            <div><label for="lembreteData">Lembrar na data – opcional</label><input type="date" id="lembreteData"></div>
+          </div>
+          <p class="dica">Se houver valor, ele entra automaticamente nas despesas (categoria Manutenção veicular).</p>
+          <p id="mensagemManut" class="aviso" role="status"></p>
+          <button type="submit" class="btn-principal">Registrar manutenção</button>
+        </form>
+      </div>
+
+      <div class="jor-card gar-historico">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-history"/></svg> Histórico</h3>
+        <ul id="listaManutencao" class="historico"></ul>
+      </div>
+    </section>
+
+    <!-- JORNADA (etapa 3: redesign visual; ids, formulário e botões preservados) -->
+    <section data-pagina="jornada" class="jornada" id="sec-jornada">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-timer"/></svg> Jornada</h2>
+          <p class="jor-sub">Controle seu turno, seus ganhos e suas entregas.</p>
+        </div>
+        <span class="jor-status" role="presentation"></span>
+      </header>
+
+      <div class="cronometro jor-cronometro">
+        <p class="jor-rotulo">Tempo de turno</p>
+        <strong id="cronometro">00:00:00</strong>
+        <p id="estadoTurno" class="dica"></p>
+        <div class="botoes-backup jor-acoes">
+          <button type="button" id="btnTurnoPrincipal" class="btn-principal">▶ Iniciar turno</button>
+          <button type="button" id="btnTurnoPausa" class="btn-secundario" hidden>⏸ Pausar</button>
+          <button type="button" id="btnResumoTurno" class="btn-secundario" hidden><svg class="icone" aria-hidden="true"><use href="#i-square-pen"/></svg> Registrar turno encerrado</button>
+        </div>
+        <p class="dica jor-seguranca">Use com o veículo parado. Nunca mexa no app enquanto estiver dirigindo ou pilotando.</p>
+      </div>
+
+      <h3 class="jor-secao">Resumo dos turnos</h3>
+      <div id="resumoTurnos" class="periodo resultado"></div>
+
+      <div class="jor-grade">
+        <div class="jor-card">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-plus"/></svg> Registrar turno</h3>
+          <form id="formTurno" novalidate>
+            <div class="linha">
+              <div><label for="dataTurno">Data</label><input type="date" id="dataTurno"></div>
+              <div><label for="inicioTurno">Início</label><input type="time" id="inicioTurno"></div>
+              <div><label for="fimTurno">Término</label><input type="time" id="fimTurno"></div>
+            </div>
+            <div class="linha">
+              <div><label for="ganhosTurno">Ganhos no turno (R$)</label><input type="number" id="ganhosTurno" min="0" step="0.01" inputmode="decimal"></div>
+              <div><label for="entregasTurno">Entregas realizadas</label><input type="number" id="entregasTurno" min="0" step="1" inputmode="numeric"></div>
+              <div><label for="kmTurno">Km rodados (opcional)</label><input type="number" id="kmTurno" min="0" step="0.1" inputmode="decimal"></div>
+            </div>
+            <button type="button" id="btnGanhosDoDia" class="btn-link">Usar os ganhos já registrados nesta data</button>
+            <p id="mensagemTurno" class="aviso" role="status"></p>
+            <button type="submit" class="btn-principal">Registrar turno</button>
+          </form>
+        </div>
+
+        <div class="jor-card">
+          <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-banknote"/></svg> Remuneração por turno</h3>
+          <p class="dica">Opcional. Com valores aqui, o ganho do turno é calculado: fixo + (entregas × valor por entrega). Mudanças valem só para os próximos turnos. Deixe 0 e 0 para lançar os ganhos à mão.</p>
+          <div class="linha-2">
+            <div><label for="ganhoFixoTurno">Ganho fixo por turno (R$)</label><input type="number" id="ganhoFixoTurno" min="0" step="0.01" inputmode="decimal" placeholder="Ex.: 50,00"></div>
+            <div><label for="valorEntregaTurno">Valor por entrega (R$)</label><input type="number" id="valorEntregaTurno" min="0" step="0.01" inputmode="decimal" placeholder="Ex.: 7,00"></div>
+          </div>
+          <button type="button" id="btnSalvarRemuneracao" class="btn-secundario">Salvar remuneração</button>
+          <p id="mensagemRemuneracao" class="aviso" role="status"></p>
+        </div>
+      </div>
+
+      <div class="jor-card jor-lista">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-history"/></svg> Turnos</h3>
+        <ul id="listaTurnos" class="historico"></ul>
+      </div>
+    </section>
+
+    <!-- COFRINHO (etapa 9: redesign visual; ids, formulário e comportamentos preservados) -->
+    <section data-pagina="cofrinho" class="cof" id="sec-cofrinho">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-piggy-bank"/></svg> Cofrinho</h2>
+          <p class="jor-sub">Crie objetivos e acompanhe quanto você já guardou para cada um.</p>
+        </div>
+      </header>
+
+      <div class="jor-card cof-novo">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-plus"/></svg> Novo objetivo</h3>
+        <form id="formObjetivo" novalidate>
+          <div class="linha-2">
+            <div><label for="nomeObjetivo">Objetivo</label><input type="text" id="nomeObjetivo" maxlength="40" placeholder="Ex.: Reserva de emergência"></div>
+            <div><label for="metaObjetivo">Valor desejado (R$)</label><input type="number" id="metaObjetivo" min="0.01" step="0.01" inputmode="decimal"></div>
+          </div>
+          <button type="submit" class="btn-secundario btn-largo-topo">Criar objetivo</button>
+        </form>
+        <p id="mensagemCofrinho" class="aviso" role="status"></p>
+      </div>
+
+      <div class="cof-lista-bloco">
+        <h3 class="jor-secao"><svg class="icone" aria-hidden="true"><use href="#i-target"/></svg> Meus objetivos</h3>
+        <div id="listaObjetivos"></div>
+      </div>
+    </section>
+
+    <!-- RECORDES (etapa 10: redesign visual; ids preservados) -->
+    <section data-pagina="recordes" class="rec" id="sec-recordes">
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-trophy"/></svg> Recordes</h2>
+          <p class="jor-sub">Suas melhores marcas, calculadas com os registros que você já fez no Movix.</p>
+        </div>
+      </header>
+
+      <div id="gradeRecordes" class="grade-stats rec-grade"></div>
+    </section>
+
+    <!-- 6. BACKUP: exportar e importar dados em arquivo -->
+    <!-- CONTA (Fase 3.2; etapa 11: redesign visual; ids preservados) -->
+    <section data-pagina="conta" class="conta" id="sec-conta">
+      <div class="auth-logo"><img src="img/logo-movix-finance-540.png" width="540" height="317" alt="MOVIX Finance" decoding="async"></div>
+      <button type="button" id="authVoltar" class="btn-link so-lobby"><svg class="icone" aria-hidden="true"><use href="#i-arrow-left"/></svg> Voltar</button>
+
+      <header class="jor-cabecalho">
+        <div class="jor-titulo-bloco">
+          <h2><svg class="icone" aria-hidden="true"><use href="#i-user"/></svg> Minha conta</h2>
+          <p class="jor-sub">Seu acesso e a sincronização dos seus dados.</p>
+        </div>
+      </header>
+      <p id="contaAviso" class="alerta" hidden></p>
+
+      <div id="contaVisitante" hidden>
+        <p class="dica">Crie uma conta para guardar seus dados na nuvem e usar o Movix em vários aparelhos.</p>
+        <div class="abas" id="abasConta">
+          <button type="button" class="aba ativa" data-modo="entrar">Entrar</button>
+          <button type="button" class="aba" data-modo="criar">Criar conta</button>
+        </div>
+        <form id="formAuth" novalidate>
+          <div id="campoNomeAuth" hidden>
+            <label for="authNome">Nome (opcional)</label>
+            <input type="text" id="authNome" maxlength="80" autocomplete="name">
+          </div>
+          <label for="authEmail">E-mail</label>
+          <input type="email" id="authEmail" autocomplete="email" inputmode="email">
+          <label for="authSenha">Senha</label>
+          <input type="password" id="authSenha" autocomplete="current-password">
+          <div id="campoConfirmarAuth" hidden>
+            <label for="authConfirmar">Confirmar senha</label>
+            <input type="password" id="authConfirmar" autocomplete="new-password">
+          </div>
+          <p id="mensagemAuth" class="aviso" role="alert"></p>
+          <button type="submit" id="btnAuth" class="btn-principal">Entrar</button>
+        </form>
+        <button type="button" id="btnEsqueci" class="btn-link">Esqueci minha senha</button>
+      </div>
+
+      <div id="contaLogada" hidden>
+        <div class="conta-card conta-id">
+          <h3 class="subtitulo"><svg class="icone" aria-hidden="true"><use href="#i-user"/></svg> Dados da conta</h3>
+          <div id="resumoConta" class="periodo"></div>
+        </div>
+
+        <div class="conta-card conta-sync">
+          <h3 class="subtitulo"><svg class="icone" aria-hidden="true"><use href="#i-cloud"/></svg> Sincronização</h3>
+          <div id="statusSync" class="periodo"></div>
+          <p id="erroSync" class="aviso erro-msg" role="alert"></p>
+          <button type="button" id="btnSyncAtivar" class="btn-principal" hidden><svg class="icone" aria-hidden="true"><use href="#i-cloud"/></svg> Ativar sincronização</button>
+          <div id="botoesSync" class="botoes-backup" hidden>
+            <button type="button" id="btnSyncAgora" class="btn-secundario"><svg class="icone" aria-hidden="true"><use href="#i-refresh-cw"/></svg> Sincronizar agora</button>
+            <button type="button" id="btnSyncPausar" class="btn-secundario"><svg class="icone" aria-hidden="true"><use href="#i-pause"/></svg> Pausar</button>
+          </div>
+          <div id="botoesMigracao" class="botoes-backup espaco-topo" hidden>
+            <button type="button" id="btnDuplicatas" class="btn-secundario"><svg class="icone" aria-hidden="true"><use href="#i-search"/></svg> Procurar duplicatas</button>
+            <button type="button" id="btnRestaurarPreventivo" class="btn-secundario"><svg class="icone" aria-hidden="true"><use href="#i-history"/></svg> Restaurar backup preventivo</button>
+          </div>
+          <div id="blocoDuplicatas" hidden></div>
+        </div>
+
+        <h3 class="subtitulo" id="tituloRelatorio" hidden><svg class="icone" aria-hidden="true"><use href="#i-history"/></svg> Relatório da última migração</h3>
+        <div id="relatorioMigracao" class="periodo" hidden></div>
+
+        <div class="conta-rodape">
+          <p class="dica dica-bloco">Os dados continuam salvos neste aparelho e funcionam sem internet.</p>
+          <button type="button" id="btnSair" class="btn-secundario btn-largo"><svg class="icone" aria-hidden="true"><use href="#i-log-out"/></svg> Sair da conta</button>
+        </div>
+      </div>
+
+      <form id="formNovaSenha" novalidate hidden>
+        <p class="dica">Defina sua nova senha.</p>
+        <label for="novaSenha">Nova senha</label>
+        <input type="password" id="novaSenha" autocomplete="new-password">
+        <label for="novaSenhaConfirmar">Confirmar nova senha</label>
+        <input type="password" id="novaSenhaConfirmar" autocomplete="new-password">
+        <p id="mensagemNovaSenha" class="aviso" role="alert"></p>
+        <button type="submit" class="btn-principal">Salvar nova senha</button>
+      </form>
+    </section>
+
+    <section data-pagina="backup" class="painel" id="sec-backup">
+      <h2><svg class="icone" aria-hidden="true"><use href="#i-hard-drive"/></svg> Backup dos dados</h2>
+      <p class="dica">Salve seus registros em um arquivo para guardar ou levar para outro aparelho.</p>
+      <div class="botoes-backup">
+        <button type="button" id="btnExportar" class="btn-secundario"><svg class="icone" aria-hidden="true"><use href="#i-download"/></svg> Exportar backup</button>
+        <button type="button" id="btnImportar" class="btn-secundario"><svg class="icone" aria-hidden="true"><use href="#i-upload"/></svg> Importar backup</button>
+        <input type="file" id="arquivoImportar" accept=".json,application/json" hidden>
+      </div>
+      <p id="mensagemBackup" class="aviso" role="status"></p>
+    </section>
+
+  </main>
+
+  <footer class="rodape">Movix • Sua jornada. Seu dinheiro. Seu controle.</footer>
+  <!-- RESUMO DE ENCERRAMENTO DO TURNO -->
+  <dialog id="dlgTurno" class="dlg-turno" aria-labelledby="tituloResumo">
+    <h3 id="tituloResumo">Resumo do turno ⏹</h3>
+    <div id="resumoEncerramento" class="periodo resultado"></div>
+    <p id="notaEncerramento" class="dica"></p>
+    <div class="linha-2">
+      <div><label for="ganhosResumo">Ganhos no turno (R$)</label><input type="number" id="ganhosResumo" min="0" step="0.01" inputmode="decimal"></div>
+      <div><label for="entregasResumo">Entregas realizadas</label><input type="number" id="entregasResumo" min="0" step="1" inputmode="numeric"></div>
+    </div>
+    <div class="linha-2">
+      <div><label for="kmResumo">Km rodados (opcional)</label><input type="number" id="kmResumo" min="0" step="0.1" inputmode="decimal"></div>
+      <div><label for="categoriaResumo">Categoria do ganho</label><select id="categoriaResumo"></select></div>
+    </div>
+    <button type="button" id="btnResumoGanhosDia" class="btn-link">Usar os ganhos já registrados nesta data</button>
+    <p id="msgResumo" class="aviso" role="status"></p>
+    <button type="button" id="btnResumoLancar" class="btn-principal">Registrar e lançar ganhos</button>
+    <button type="button" id="btnResumoSemLancar" class="btn-secundario">Registrar sem lançar ganhos</button>
+    <div class="dlg-links">
+      <button type="button" id="btnResumoFormulario" class="btn-link">Preencher no formulário</button>
+      <button type="button" id="btnResumoDepois" class="btn-link">Decidir depois</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="backup-local.js"></script>
+  <script>
+    /* E1 (FALHA FECHADA): o aplicativo só EXECUTA depois que esta aba obtiver a participação no lock "movix-dados".
+       Só carrega os seis scripts se: (1) backup-local.js executou, (2) MovixBackup existe, (3) aguardarInicio é uma
+       função, (4) ela devolve uma promessa e (5) a promessa resolve exatamente com "ok" (lock obtido).
+       Qualquer falha (arquivo ausente/HTTP, erro de execução, objeto ou função ausentes, rejeição, resposta diferente
+       de "ok" ou módulo que não responde) mostra a tela de erro e NÃO carrega nem inicializa o app: sem fallback. */
+    (function () {
+      var lista = ["script.js", "auth.js", "sync.js", "frete.js", "lobby.js", "nav.js"];
+      var bloqueado = false, resolvido = false;
+      window.__movixProtecaoLocal = true;
+      function bloquear(detalhe) {
+        bloqueado = true;
+        try { console.error("[Movix] inicialização bloqueada:", detalhe); } catch (e) { /* ignora */ }
+        if (document.getElementById("movixFalhaCarregamento")) return;
+        var d = document.createElement("div");
+        d.id = "movixFalhaCarregamento"; d.setAttribute("role", "alert");
+        d.style.cssText = "position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;background:#0f172a;color:#fff;font:16px/1.5 system-ui,sans-serif;text-align:center";
+        var t = document.createElement("strong"); t.style.fontSize = "20px"; t.textContent = "Não foi possível abrir o Movix com segurança";
+        var p = document.createElement("div"); p.style.maxWidth = "34em";
+        p.textContent = "O módulo de proteção dos dados não carregou ou não respondeu corretamente, por isso o aplicativo não foi iniciado e nenhum dado foi alterado. Verifique sua conexão e tente novamente. Se o problema continuar, atualize a página ou use outro navegador.";
+        var b = document.createElement("button"); b.type = "button"; b.textContent = "Tentar novamente";
+        b.style.cssText = "padding:10px 20px;font:inherit;border:0;border-radius:8px;cursor:pointer";
+        b.addEventListener("click", function () { location.reload(); });
+        d.appendChild(t); d.appendChild(p); d.appendChild(b);
+        (document.body || document.documentElement).appendChild(d);
+      }
+      function carregar() {
+        if (bloqueado) return;
+        var B = window.MovixBackup, restantes = lista.length;
+        lista.forEach(function (src) {
+          var s = document.createElement("script"); s.src = src; s.async = false;
+          s.onload = s.onerror = function () { restantes -= 1; if (restantes === 0 && B && typeof B.appCarregado === "function") B.appCarregado(); };
+          document.body.appendChild(s);
+        });
+      }
+      var B = window.MovixBackup;
+      if (!B || typeof B.aguardarInicio !== "function") { bloquear("módulo ausente ou sem aguardarInicio()"); return; }
+      var espera;
+      try { espera = B.aguardarInicio(); } catch (e) { bloquear("aguardarInicio() lançou erro: " + e); return; }
+      if (!espera || typeof espera.then !== "function") { bloquear("aguardarInicio() não devolveu uma promessa"); return; }
+      lista.forEach(function (src) {          // só baixa (sem executar) depois de o módulo ter respondido corretamente
+        var l = document.createElement("link"); l.rel = "preload"; l.as = "script"; l.href = src; document.head.appendChild(l);
+      });
+      // módulo que trava sem mostrar a tela de espera/bloqueio: não deixa o app "meio aberto"
+      setTimeout(function () {
+        if (!resolvido && !bloqueado && !document.getElementById("movixEspera") && !document.getElementById("movixBloqueio")) bloquear("o módulo não respondeu");
+      }, 4000);
+      espera.then(function (v) {
+        resolvido = true;
+        if (bloqueado) return;
+        if (v !== "ok") { bloquear("resposta inesperada de aguardarInicio(): " + v); return; }
+        carregar();
+      }, function (e) { resolvido = true; bloquear("aguardarInicio() rejeitou: " + e); });
+    })();
+  </script>
+</body>
+</html>

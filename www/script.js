@@ -1,0 +1,1838 @@
+/* =====================================================
+   Movix - lógica da aplicação
+   Organização:
+   1. Configurações e estado
+   2. Utilitários (dinheiro e datas)
+   3. Persistência (LocalStorage)
+   4. Cálculos
+   5. Validação
+   6. Renderização (desenhar na tela)
+   7. Eventos e inicialização
+   ===================================================== */
+
+/* ---------- 1. Configurações e estado ---------- */
+
+// ATENÇÃO: as chaves do LocalStorage mantêm o prefixo "motograna:" de propósito.
+// Assim, os dados já salvos continuam sendo lidos, sem precisar de migração.
+const CHAVE_STORAGE = "motograna:movimentacoes";
+
+// Categorias disponíveis para cada tipo de movimentação
+const CATEGORIAS = {
+  ganho: ["iFood", "Uber Eats", "99", "Uber", "Táxi", "Entrega particular", "Corrida particular", "Gorjeta", "Outros"],
+  despesa: ["Combustível", "Manutenção", "Manutenção veicular", "Alimentação", "Aluguel do veículo", "Pedágio", "Documentação/IPVA", "Multa", "Outros"]
+};
+
+// Lista de movimentações em memória. Cada item:
+// { id, descricao, tipo, categoria, valor, data (AAAA-MM-DD) }
+let movimentacoes = [];
+
+// Referências aos elementos da página
+const form = document.getElementById("formMovimentacao");
+const campoDescricao = document.getElementById("descricao");
+const campoCategoria = document.getElementById("categoria");
+const campoValor = document.getElementById("valor");
+const campoData = document.getElementById("data");
+const mensagemErro = document.getElementById("mensagemErro");
+const listaHistorico = document.getElementById("listaHistorico");
+const areaRelatorio = document.getElementById("relatorio");
+
+/* ---------- 2. Utilitários ---------- */
+
+// Formata número como moeda brasileira: 1234.5 -> "R$ 1.234,50"
+function formatarMoeda(numero) {
+  return numero.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+// Converte um objeto Date em texto "AAAA-MM-DD" usando o fuso local
+function dataParaTexto(data) {
+  const ano = data.getFullYear();
+  const mes = String(data.getMonth() + 1).padStart(2, "0");
+  const dia = String(data.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+
+// Converte "AAAA-MM-DD" para "DD/MM/AAAA" (sem mexer em fuso horário)
+function formatarData(texto) {
+  const [ano, mes, dia] = texto.split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+// Gera um identificador único para cada registro
+function gerarId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+// Retorna o tipo escolhido no formulário ("ganho" ou "despesa")
+function tipoSelecionado() {
+  return form.elements["tipo"].value;
+}
+
+/* ---------- 3. Persistência ---------- */
+
+function salvarDados() {
+  try {
+    localStorage.setItem(CHAVE_STORAGE, JSON.stringify(movimentacoes));
+  } catch (erro) {
+    mostrarErro("Não foi possível salvar os dados neste navegador.");
+  }
+}
+
+function carregarDados() {
+  try {
+    const texto = localStorage.getItem(CHAVE_STORAGE);
+    const dados = texto ? JSON.parse(texto) : [];
+    // Mantém apenas itens com formato válido (protege contra dados corrompidos)
+    movimentacoes = Array.isArray(dados) ? dados.filter(registroValido) : [];
+  } catch (erro) {
+    movimentacoes = [];
+  }
+}
+
+function registroValido(item) {
+  return item
+    && typeof item.id === "string"
+    && (item.tipo === "ganho" || item.tipo === "despesa")
+    && typeof item.descricao === "string"
+    && typeof item.categoria === "string"
+    && typeof item.valor === "number" && isFinite(item.valor)
+    && typeof item.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.data);
+}
+
+/* ---------- 3.1 Proteção das operações de risco ---------- */
+// Antes de operações que alteram muitos dados de uma vez (importar, remover cópias, restaurar), pede ao backup-local.js
+// o snapshot independente (IndexedDB) e AGUARDA. Se não for possível criá-lo, o usuário decide explicitamente.
+async function protegerAntes(origem, descricao) {
+  try {
+    if (typeof MovixBackup !== "undefined" && MovixBackup && typeof MovixBackup.protegerOperacao === "function") return (await MovixBackup.protegerOperacao(origem, descricao)) === true;
+  } catch (erro) { /* cai na confirmação abaixo */ }
+  return confirm("Não foi possível criar a cópia de segurança independente neste aparelho.\n\nSe continuar, esta operação será feita SEM essa cópia. Deseja continuar mesmo assim?");
+}
+
+/* ---------- 4. Cálculos ---------- */
+
+// Soma ganhos, despesas e lucro das movimentações entre duas datas (inclusive).
+// Sem datas, soma tudo. Comparar textos AAAA-MM-DD funciona em ordem cronológica.
+function calcularTotais(inicio, fim) {
+  let ganhos = 0;
+  let despesas = 0;
+
+  movimentacoes.forEach(function (m) {
+    if (inicio && m.data < inicio) return;
+    if (fim && m.data > fim) return;
+    if (m.tipo === "ganho") ganhos += m.valor;
+    else despesas += m.valor;
+  });
+
+  // Arredonda para evitar erros de ponto flutuante (ex.: 0.1 + 0.2)
+  ganhos = Math.round(ganhos * 100) / 100;
+  despesas = Math.round(despesas * 100) / 100;
+  const lucro = Math.round((ganhos - despesas) * 100) / 100;
+  return { ganhos, despesas, lucro };
+}
+
+// Descobre início e fim de hoje, da semana (segunda a domingo) e do mês
+function obterPeriodos() {
+  const hoje = new Date();
+
+  const semanaInicio = new Date(hoje);
+  const diasDesdeSegunda = (hoje.getDay() + 6) % 7; // segunda = 0
+  semanaInicio.setDate(hoje.getDate() - diasDesdeSegunda);
+  const semanaFim = new Date(semanaInicio);
+  semanaFim.setDate(semanaInicio.getDate() + 6);
+
+  const mesInicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  const mesFim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+
+  return [
+    { nome: "Hoje", inicio: dataParaTexto(hoje), fim: dataParaTexto(hoje) },
+    { nome: "Esta semana", inicio: dataParaTexto(semanaInicio), fim: dataParaTexto(semanaFim) },
+    { nome: "Este mês", inicio: dataParaTexto(mesInicio), fim: dataParaTexto(mesFim) }
+  ];
+}
+
+/* ---------- 5. Validação ---------- */
+
+// Retorna uma mensagem de erro, ou "" se estiver tudo certo
+function validarFormulario() {
+  const descricao = campoDescricao.value.trim();
+  const valor = parseFloat(campoValor.value);
+
+  if (descricao === "") return "Informe uma descrição.";
+  if (!CATEGORIAS[tipoSelecionado()].includes(campoCategoria.value)) return "Escolha uma categoria.";
+  if (!isFinite(valor) || valor <= 0) return "Informe um valor maior que zero.";
+  if (campoData.value === "" || isNaN(new Date(campoData.value + "T00:00:00"))) return "Informe uma data válida.";
+  return "";
+}
+
+function mostrarErro(texto) {
+  toast(texto, true);
+  mensagemErro.textContent = texto;
+}
+
+/* ---------- 6. Renderização ---------- */
+
+// Preenche o select de categorias conforme o tipo escolhido
+function atualizarCategorias() {
+  campoCategoria.innerHTML = "";
+  CATEGORIAS[tipoSelecionado()].forEach(function (nome) {
+    const opcao = document.createElement("option");
+    opcao.value = nome;
+    opcao.textContent = nome;
+    campoCategoria.appendChild(opcao);
+  });
+}
+
+// Atualiza os 3 cards do topo
+function renderizarDashboard() {
+  const total = calcularTotais();
+  document.getElementById("totalGanhos").textContent = formatarMoeda(total.ganhos);
+  document.getElementById("totalDespesas").textContent = formatarMoeda(total.despesas);
+  document.getElementById("totalLucro").textContent = formatarMoeda(total.lucro);
+  document.querySelector(".card-lucro").classList.toggle("negativo", total.lucro < 0);
+}
+
+// Cria uma linha do relatório (ex.: "Ganhos ........ R$ 100,00")
+function criarLinhaRelatorio(classe, rotulo, valor) {
+  const p = document.createElement("p");
+  p.className = classe;
+  const nome = document.createElement("span");
+  nome.textContent = rotulo;
+  const numero = document.createElement("span");
+  numero.textContent = formatarMoeda(valor);
+  p.append(nome, numero);
+  return p;
+}
+
+// Desenha o resumo de hoje, semana e mês
+function renderizarRelatorio() {
+  areaRelatorio.innerHTML = "";
+  obterPeriodos().forEach(function (periodo) {
+    const totais = calcularTotais(periodo.inicio, periodo.fim);
+    const bloco = document.createElement("div");
+    bloco.className = "periodo";
+    const titulo = document.createElement("h3");
+    titulo.textContent = periodo.nome;
+    bloco.append(
+      titulo,
+      criarLinhaRelatorio("g", "Ganhos", totais.ganhos),
+      criarLinhaRelatorio("d", "Despesas", totais.despesas),
+      criarLinhaRelatorio("l", "Lucro", totais.lucro)
+    );
+    areaRelatorio.appendChild(bloco);
+  });
+}
+
+// Desenha a lista de movimentações (mais recentes primeiro)
+function renderizarHistorico() {
+  listaHistorico.innerHTML = "";
+
+  if (movimentacoes.length === 0) {
+    const vazio = document.createElement("li");
+    vazio.className = "vazio";
+    vazio.textContent = "Nenhuma movimentação ainda. Registre a primeira!";
+    listaHistorico.appendChild(vazio);
+    return;
+  }
+
+  const ordenadas = movimentacoes.slice().sort(function (a, b) {
+    return b.data.localeCompare(a.data) || b.id.localeCompare(a.id);
+  });
+
+  ordenadas.forEach(function (m) {
+    const item = document.createElement("li");
+    item.className = "item " + m.tipo;
+
+    const info = document.createElement("div");
+    info.className = "info";
+    const titulo = document.createElement("strong");
+    titulo.textContent = m.descricao;
+    const detalhe = document.createElement("small");
+    detalhe.textContent = m.categoria + " • " + formatarData(m.data);
+    info.append(titulo, detalhe);
+
+    const valor = document.createElement("span");
+    valor.className = "valor";
+    valor.textContent = (m.tipo === "ganho" ? "+ " : "- ") + formatarMoeda(m.valor);
+
+    const botao = document.createElement("button");
+    botao.className = "btn-excluir";
+    botao.type = "button";
+    botao.textContent = "Excluir";
+    botao.setAttribute("aria-label", "Excluir " + m.descricao);
+    botao.dataset.id = m.id;
+
+    item.append(info, valor, botao);
+    listaHistorico.appendChild(item);
+  });
+}
+
+// Atualiza tudo de uma vez após qualquer mudança
+function atualizarTela() {
+  renderizarDashboard();
+  renderizarRelatorio();
+  renderizarHistorico();
+  renderizarMeta();
+  atualizarExtras();
+}
+
+/* ---------- 6.0 Meta semanal ---------- */
+
+const CHAVE_META = "motograna:metaSemanal";
+let metaSemanal = 0; // 0 = sem meta definida
+
+function carregarMeta() {
+  try {
+    const valor = parseFloat(localStorage.getItem(CHAVE_META));
+    metaSemanal = isFinite(valor) && valor > 0 ? valor : 0;
+  } catch (erro) {
+    metaSemanal = 0;
+  }
+}
+
+function aoSalvarMeta() {
+  const campo = document.getElementById("campoMeta");
+  const aviso = document.getElementById("mensagemMeta");
+  const texto = campo.value.trim();
+  const valor = texto === "" ? 0 : parseFloat(texto);
+
+  if (!isFinite(valor) || valor < 0) {
+    aviso.textContent = "Informe um valor válido para a meta.";
+    aviso.classList.add("erro-msg");
+    return;
+  }
+
+  metaSemanal = Math.round(valor * 100) / 100;
+  try {
+    if (metaSemanal > 0) localStorage.setItem(CHAVE_META, String(metaSemanal));
+    else localStorage.removeItem(CHAVE_META);
+  } catch (erro) {
+    aviso.textContent = "Não foi possível salvar a meta neste navegador.";
+    aviso.classList.add("erro-msg");
+    return;
+  }
+
+  aviso.classList.remove("erro-msg");
+  aviso.textContent = metaSemanal > 0 ? "Meta salva!" : "Meta removida.";
+  toast(aviso.textContent);
+  renderizarMeta();
+}
+
+// Mostra o progresso do lucro da semana em relação à meta
+function renderizarMeta() {
+  const area = document.getElementById("progressoMeta");
+  if (metaSemanal <= 0) {
+    area.hidden = true;
+    return;
+  }
+  area.hidden = false;
+
+  const semana = obterPeriodos()[1];
+  const lucro = calcularTotais(semana.inicio, semana.fim).lucro;
+  const falta = Math.round((metaSemanal - lucro) * 100) / 100;
+  const percentual = Math.max(0, Math.min(100, (lucro / metaSemanal) * 100));
+
+  document.getElementById("barraMeta").style.width = percentual + "%";
+
+  const textoProgresso = document.getElementById("textoProgresso");
+  const textoDiario = document.getElementById("textoDiario");
+
+  if (falta <= 0) {
+    textoProgresso.textContent = "Meta batida! 🎉 Lucro da semana: " + formatarMoeda(lucro) +
+      " de " + formatarMoeda(metaSemanal) + ".";
+    textoDiario.textContent = "Parabéns pelo esforço! Tudo que vier agora é a mais.";
+  } else {
+    textoProgresso.textContent = Math.floor(percentual) + "% da meta • faltam " + formatarMoeda(falta) +
+      " (lucro de " + formatarMoeda(lucro) + " em " + formatarMoeda(metaSemanal) + ").";
+    // Dias que ainda restam na semana, contando hoje (semana vai de segunda a domingo)
+    const diasRestantes = 7 - ((new Date().getDay() + 6) % 7);
+    const porDia = falta / diasRestantes;
+    textoDiario.textContent = "Para chegar lá: cerca de " + formatarMoeda(porDia) +
+      " de lucro por dia nos próximos " + diasRestantes + (diasRestantes === 1 ? " dia." : " dias.");
+  }
+}
+
+/* ---------- 6.05 Palavra de incentivo ---------- */
+
+// Textos baseados na tradução Almeida (domínio público)
+const VERSICULOS = [
+  { texto: "Posso todas as coisas em Cristo que me fortalece.", ref: "Filipenses 4:13" },
+  { texto: "O Senhor guardará a tua saída e a tua entrada, desde agora e para sempre.", ref: "Salmos 121:8" },
+  { texto: "Entrega ao Senhor as tuas obras, e teus pensamentos serão estabelecidos.", ref: "Provérbios 16:3" },
+  { texto: "Esforça-te, e tem bom ânimo; o Senhor teu Deus é contigo, por onde quer que andares.", ref: "Josué 1:9" },
+  { texto: "Tudo quanto fizerdes, fazei-o de coração, como ao Senhor, e não aos homens.", ref: "Colossenses 3:23" },
+  { texto: "A mão dos diligentes enriquece.", ref: "Provérbios 10:4" },
+  { texto: "Não nos cansemos de fazer o bem, porque a seu tempo ceifaremos, se não desfalecermos.", ref: "Gálatas 6:9" },
+  { texto: "Não temas, porque eu sou contigo; eu te fortaleço, e te ajudo.", ref: "Isaías 41:10" },
+  { texto: "Aos seus anjos dará ordem a teu respeito, para te guardarem em todos os teus caminhos.", ref: "Salmos 91:11" },
+  { texto: "Entrega o teu caminho ao Senhor; confia nele, e ele o fará.", ref: "Salmos 37:5" }
+];
+
+let indiceVersiculo = 0;
+
+// Escolhe um versículo diferente a cada dia (mesmo ao recarregar a página)
+function indiceDoDia() {
+  const agora = new Date();
+  const diasDesde1970 = Math.floor((agora.getTime() - agora.getTimezoneOffset() * 60000) / 86400000);
+  return diasDesde1970 % VERSICULOS.length;
+}
+
+function renderizarVersiculo() {
+  const v = VERSICULOS[indiceVersiculo];
+  document.getElementById("textoVersiculo").textContent = "“" + v.texto + "”";
+  document.getElementById("refVersiculo").textContent = v.ref;
+}
+
+function proximoVersiculo() {
+  indiceVersiculo = (indiceVersiculo + 1) % VERSICULOS.length;
+  renderizarVersiculo();
+}
+
+/* ---------- 6.1 Backup (exportar / importar) ---------- */
+
+function mostrarAvisoBackup(texto, ehErro) {
+  toast(texto, ehErro);
+  const aviso = document.getElementById("mensagemBackup");
+  aviso.textContent = texto;
+  aviso.classList.toggle("erro-msg", Boolean(ehErro));
+}
+
+// Monta o pacote completo de dados (usado no backup e na sincronização)
+function montarPacoteBackup() {
+  // Remuneração é uma configuração local (não altera turnos antigos), mas precisa
+  // acompanhar o backup exportado para não se perder ao trocar/restaurar aparelho.
+  return { app: "Movix", versao: 2, movimentacoes, metaSemanal, combustivel: extras.combustivel, manutencoes: extras.manutencoes, turnos: extras.turnos, objetivos: extras.objetivos, veiculos: extras.veiculos, metaMensal, remuneracao: { ...remuneracao } };
+}
+
+// Baixa um arquivo .json com todas as movimentações
+async function exportarBackup() {
+  if (movimentacoes.length === 0 && !temDadosExtras()) {
+    mostrarAvisoBackup("Não há movimentações para exportar.", true);
+    return;
+  }
+
+  const pacote = montarPacoteBackup();
+  const conteudo = JSON.stringify(pacote, null, 2);
+  const nomeArquivo = "movix-backup-" + dataParaTexto(new Date()) + ".json";
+  const capacitor = window.Capacitor;
+
+  // Exportação nativa pelo seletor de documentos do Android.
+  if (
+    capacitor &&
+    typeof capacitor.isNativePlatform === "function" &&
+    capacitor.isNativePlatform() &&
+    typeof capacitor.getPlatform === "function" &&
+    capacitor.getPlatform() === "android"
+  ) {
+    try {
+      const plugin = capacitor.registerPlugin("BackupFile");
+      const resultado = await plugin.save({
+        fileName: nomeArquivo,
+        content: conteudo
+      });
+
+      if (resultado && resultado.cancelled) {
+        mostrarAvisoBackup("Exportação cancelada.", false);
+        return;
+      }
+
+      if (!resultado || !resultado.saved) {
+        mostrarAvisoBackup("Não foi possível salvar o backup.", true);
+        return;
+      }
+
+      mostrarAvisoBackup(
+        "Backup exportado com " + movimentacoes.length + " movimentações.",
+        false
+      );
+    } catch (erro) {
+      console.error("Erro ao exportar backup no Android:", erro);
+      mostrarAvisoBackup("Não foi possível salvar o backup no dispositivo.", true);
+    }
+
+    return;
+  }
+
+  // Download original para navegadores.
+  const arquivo = new Blob([conteudo], { type: "application/json" });
+  const url = URL.createObjectURL(arquivo);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = nomeArquivo;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+
+  mostrarAvisoBackup("Backup exportado com " + movimentacoes.length + " movimentações.", false);
+}
+
+// Lê um arquivo de backup e adiciona os registros que ainda não existem
+function importarBackup(arquivo) {
+  if (!arquivo) return;
+
+  const leitor = new FileReader();
+  leitor.onerror = function () {
+    mostrarAvisoBackup("Não foi possível ler o arquivo.", true);
+  };
+  leitor.onload = async function () {
+    let dados;
+    try {
+      dados = JSON.parse(leitor.result);
+    } catch (erro) {
+      mostrarAvisoBackup("Arquivo inválido: não é um backup do Movix.", true);
+      return;
+    }
+    // Aceita o formato antigo (lista de movimentações) e o novo (objeto com tudo)
+    const pacote = Array.isArray(dados) ? { movimentacoes: dados } : dados;
+    if (!pacote || !Array.isArray(pacote.movimentacoes)) {
+      mostrarAvisoBackup("Arquivo inválido: formato não reconhecido.", true);
+      return;
+    }
+    dados = pacote.movimentacoes;
+    if (!(await protegerAntes("pre_importacao", "importação de backup"))) { mostrarAvisoBackup("Importação cancelada. Nada foi alterado.", true); return; }
+    importarExtras(pacote);
+
+    // Mantém a regra de importação aditiva: só preenche a remuneração quando este
+    // aparelho ainda não tem uma configuração ativa. Backups antigos sem o campo seguem válidos.
+    let falhaRemuneracao = false;
+    if (!remuneracaoAtiva() && pacote.remuneracao && typeof pacote.remuneracao === "object") {
+      const fixo = pacote.remuneracao.fixo, porEntrega = pacote.remuneracao.porEntrega;
+      if ([fixo, porEntrega].every((v) => typeof v === "number" && isFinite(v) && v >= 0)) {
+        const remuneracaoAnterior = remuneracao;
+        remuneracao = { fixo: arred(fixo), porEntrega: arred(porEntrega) };
+        try {
+          if (remuneracaoAtiva()) localStorage.setItem(CHAVE_REMUNERACAO, JSON.stringify(remuneracao));
+          else localStorage.removeItem(CHAVE_REMUNERACAO);
+        } catch (erro) { remuneracao = remuneracaoAnterior; falhaRemuneracao = true; }
+        if (!falhaRemuneracao) {
+          if ($("ganhoFixoTurno")) $("ganhoFixoTurno").value = remuneracao.fixo;
+          if ($("valorEntregaTurno")) $("valorEntregaTurno").value = remuneracao.porEntrega;
+        }
+      }
+    }
+
+    const idsExistentes = new Set(movimentacoes.map(function (m) { return m.id; }));
+    let adicionados = 0;
+    let ignorados = 0;
+
+    dados.forEach(function (item) {
+      if (registroValido(item) && !idsExistentes.has(item.id)) {
+        movimentacoes.push({
+          id: item.id,
+          descricao: item.descricao.trim().slice(0, 60),
+          tipo: item.tipo,
+          categoria: item.categoria,
+          valor: item.valor,
+          data: item.data,
+          ...(item.origem && typeof item.origem.id === "string" ? { origem: { tipo: String(item.origem.tipo), id: item.origem.id } } : {})
+        });
+        idsExistentes.add(item.id);
+        adicionados++;
+      } else {
+        ignorados++;
+      }
+    });
+
+    salvarDados();
+    atualizarTela();
+    document.dispatchEvent(new CustomEvent("movix:backup-importado", { detail: { texto: leitor.result, adicionados, ignorados } }));
+    mostrarAvisoBackup(
+      adicionados + " movimentações importadas" +
+      (ignorados > 0 ? " (" + ignorados + " ignoradas: repetidas ou inválidas)." : ".") +
+      (falhaRemuneracao ? " A remuneração não foi importada porque não foi possível gravar a configuração neste aparelho." : ""),
+      falhaRemuneracao
+    );
+  };
+  leitor.readAsText(arquivo);
+}
+
+/* ---------- 6.2 Novas funções ----------
+   Combustível, manutenção, gráficos, jornada, cofrinho e recordes.
+   Os dados novos ficam em chaves próprias do LocalStorage; as movimentações
+   (chave "motograna:movimentacoes") continuam exatamente como antes. */
+
+const CHAVES_EXTRAS = {
+  combustivel: "motograna:combustivel",
+  manutencoes: "motograna:manutencoes",
+  turnos: "motograna:turnos",
+  objetivos: "motograna:objetivos",
+  veiculos: "motograna:veiculos"
+};
+// Campos numéricos obrigatórios de cada tipo (valida dados salvos e importados)
+const CAMPOS_NUM = {
+  combustivel: ["kmInicial", "kmFinal", "consumo", "preco", "custo"],
+  manutencoes: ["valor", "km"],
+  turnos: ["minutos", "ganhos", "entregas"],
+  objetivos: ["meta", "guardado"],
+  veiculos: ["kmAtual"]
+};
+const TIPOS_MANUTENCAO = ["Troca de óleo", "Pneus", "Kit relação", "Freios", "Corrente", "Outra"];
+const extras = { combustivel: [], manutencoes: [], turnos: [], objetivos: [], veiculos: [] };
+
+const COR_VERDE = "#34d399", COR_VERMELHO = "#f87171", COR_VIOLETA = "#a78bfa", COR_TEXTO = "#a79fc2", COR_GRADE = "#2b2050";
+let tipoGrafico = "barras";
+let layoutGrafico = null; // posições do gráfico, usadas pelo balão de valores
+
+/* --- Utilitários --- */
+const $ = (id) => document.getElementById(id);
+const arred = (n) => Math.round(n * 100) / 100;
+const formatarNumero = (n) => n.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+const num = (id) => parseFloat($(id).value);
+
+// Cria um elemento com classe e texto (textContent evita injeção de HTML)
+function el(tag, classe, texto) {
+  const e = document.createElement(tag);
+  if (classe) e.className = classe;
+  if (texto !== undefined) e.textContent = texto;
+  return e;
+}
+
+// Aviso rápido que aparece na tela e some sozinho
+function toast(texto, erro) {
+  if (!texto) return;
+  const t = $("toast");
+  t.textContent = texto;
+  t.className = "toast mostrar" + (erro ? " erro" : "");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("mostrar"), 2800);
+}
+
+function aviso(id, texto, erro) {
+  toast(texto, erro);
+  const a = $(id);
+  a.textContent = texto;
+  a.classList.toggle("erro-msg", Boolean(erro));
+}
+
+const ganhosDoDia = (data) => (data ? calcularTotais(data, data).ganhos : 0);
+
+// Registra uma despesa na lista principal (usada pelas opções "lançar também como despesa")
+function lancarDespesa(descricao, categoria, valor, data, origem) {
+  if (origem && movimentacoes.some((m) => m.origem && m.origem.id === origem.id)) return; // evita duplicidade
+  const mov = { id: gerarId(), descricao: descricao.slice(0, 60), tipo: "despesa", categoria, valor: arred(valor), data };
+  if (origem) mov.origem = origem; // liga a despesa ao abastecimento/manutenção que a gerou
+  movimentacoes.push(mov);
+  salvarDados();
+}
+
+/* --- Remuneração do turno: ganho fixo + entregas x valor por entrega ---
+   Fica só neste aparelho (chave própria; não é enviada ao Supabase). Não é gravada nos turnos:
+   cada turno guarda apenas o total já calculado em "ganhos", então mudar a configuração
+   nunca altera turnos antigos. Valores 0 e 0 = desligado (lançamento manual, como antes). */
+const CHAVE_REMUNERACAO = "motograna:remuneracao";
+let remuneracao = { fixo: 0, porEntrega: 0 };
+const remuneracaoAtiva = () => remuneracao.fixo > 0 || remuneracao.porEntrega > 0;
+const calcularRemuneracao = (entregas, cfg = remuneracao) => arred(cfg.fixo + (Number.isInteger(entregas) && entregas > 0 ? entregas : 0) * cfg.porEntrega);
+
+function carregarRemuneracao() {
+  try {
+    const r = JSON.parse(localStorage.getItem(CHAVE_REMUNERACAO));
+    const ok = (v) => (typeof v === "number" && isFinite(v) && v >= 0 ? arred(v) : 0);
+    remuneracao = r ? { fixo: ok(r.fixo), porEntrega: ok(r.porEntrega) } : { fixo: 0, porEntrega: 0 };
+  } catch (erro) { remuneracao = { fixo: 0, porEntrega: 0 }; }
+}
+
+function aoSalvarRemuneracao() {
+  const ler = (id) => ($(id).value.trim() === "" ? 0 : parseFloat($(id).value));
+  const fixo = ler("ganhoFixoTurno"), porEntrega = ler("valorEntregaTurno");
+  if (!isFinite(fixo) || fixo < 0 || !isFinite(porEntrega) || porEntrega < 0) return aviso("mensagemRemuneracao", "Informe valores válidos (zero ou maiores).", true);
+  remuneracao = { fixo: arred(fixo), porEntrega: arred(porEntrega) };
+  try {
+    if (remuneracaoAtiva()) localStorage.setItem(CHAVE_REMUNERACAO, JSON.stringify(remuneracao));
+    else localStorage.removeItem(CHAVE_REMUNERACAO);
+  } catch (erro) { return aviso("mensagemRemuneracao", "Não foi possível salvar neste navegador.", true); }
+  aviso("mensagemRemuneracao", remuneracaoAtiva() ? "Remuneração salva! Vale para os próximos turnos." : "Remuneração removida. Os ganhos voltam a ser digitados à mão.", false);
+}
+
+// Preenche o campo de ganhos com o total calculado (só se a configuração estiver ativa; o usuário ainda pode editar)
+function aplicarRemuneracao(idGanhos, idEntregas) {
+  if (!remuneracaoAtiva()) return;
+  const texto = $(idEntregas).value.trim(), entregas = texto === "" ? 0 : Number(texto);
+  if (!Number.isInteger(entregas) || entregas < 0) return;
+  $(idGanhos).value = calcularRemuneracao(entregas);
+}
+
+/* --- Ganho do turno como movimentação (fechamento inteligente de turno) --- */
+// REGRA DE DATA: o ganho pertence ao DIA EM QUE O TURNO COMEÇOU (turno.data),
+// mesmo quando o turno termina no dia seguinte.
+const CATEGORIA_GANHO_TURNO = "Entrega particular";
+const DESCRICAO_GANHO_TURNO = "Ganhos do turno";
+const movimentacaoDoTurno = (turnoId) => movimentacoes.find((m) => m.origem && m.origem.tipo === "turno" && m.origem.id === turnoId);
+
+// Ganhos lançados à mão (sem origem) numa data: servem para avisar de possível duplicidade
+const ganhosManuaisDaData = (data) => arred(movimentacoes
+  .filter((m) => m.tipo === "ganho" && !m.origem && m.data === data)
+  .reduce((soma, m) => soma + m.valor, 0));
+
+// ÚNICA rotina que cria a movimentação de ganho de um turno.
+// Idempotente: se o turno já tem ganho lançado, não cria outro.
+function sincronizarMovimentacaoDoTurno(turno, categoria) {
+  if (movimentacaoDoTurno(turno.id)) return "existente";
+  if (!(turno.ganhos > 0)) return "sem_valor";
+  movimentacoes.push({
+    id: gerarId(),
+    descricao: DESCRICAO_GANHO_TURNO,
+    tipo: "ganho",
+    categoria: CATEGORIAS.ganho.includes(categoria) ? categoria : CATEGORIA_GANHO_TURNO,
+    valor: arred(turno.ganhos),
+    data: turno.data,
+    origem: { tipo: "turno", id: turno.id }   // liga o ganho ao turno que o gerou
+  });
+  salvarDados();
+  return "criado";
+}
+
+// Antes de lançar, avisa se já há ganhos manuais na mesma data (evita contar o mesmo dinheiro duas vezes)
+function confirmarPossivelDuplicidade(turno) {
+  const ja = ganhosManuaisDaData(turno.data);
+  if (ja <= 0) return true;
+  return confirm("Você já registrou " + formatarMoeda(ja) + " de ganhos em " + formatarData(turno.data)
+    + ". Lançar mais " + formatarMoeda(turno.ganhos) + " pode contar o mesmo dinheiro duas vezes. Lançar mesmo assim?");
+}
+
+// Linha "rótulo ........ valor" dentro de um bloco .periodo
+function linhaInfo(rotulo, texto, classe) {
+  const p = el("p", classe);
+  p.append(el("span", "", rotulo), el("span", "", texto));
+  return p;
+}
+
+// Item de lista no mesmo estilo do histórico principal
+function criarItem(classe, titulo, detalhe, direita, aoExcluir) {
+  const li = el("li", "item " + classe);
+  const info = el("div", "info");
+  info.append(el("strong", "", titulo), el("small", "", detalhe));
+  li.append(info, el("span", "valor", direita));
+  if (aoExcluir) {
+    const b = el("button", "btn-excluir", "Excluir");
+    b.type = "button";
+    b.addEventListener("click", () => { if (confirm("Excluir este registro?")) aoExcluir(); });
+    li.appendChild(b);
+  }
+  return li;
+}
+
+const listaVazia = (ul, texto) => ul.append(el("li", "vazio", texto));
+const maisRecentes = (lista) => [...lista].sort((a, b) => b.data.localeCompare(a.data) || b.id.localeCompare(a.id));
+
+/* --- Persistência dos dados novos --- */
+function itemExtraValido(nome, i) {
+  return Boolean(i) && typeof i.id === "string"
+    && (nome === "objetivos" || nome === "veiculos" || /^\d{4}-\d{2}-\d{2}$/.test(i.data))
+    && CAMPOS_NUM[nome].every((c) => typeof i[c] === "number" && isFinite(i[c]));
+}
+
+function carregarExtras() {
+  Object.keys(CHAVES_EXTRAS).forEach((nome) => {
+    try {
+      const dados = JSON.parse(localStorage.getItem(CHAVES_EXTRAS[nome]));
+      extras[nome] = Array.isArray(dados) ? dados.filter((i) => itemExtraValido(nome, i)) : [];
+    } catch (erro) {
+      extras[nome] = [];
+    }
+  });
+}
+
+function salvarExtras(nome) {
+  try { localStorage.setItem(CHAVES_EXTRAS[nome], JSON.stringify(extras[nome])); }
+  catch (erro) { /* sem espaço ou bloqueado: o app continua funcionando em memória */ }
+}
+
+function removerExtra(nome, id) {
+  extras[nome] = extras[nome].filter((i) => i.id !== id);
+  salvarExtras(nome);
+  // apaga SOMENTE a despesa vinculada a este registro
+  movimentacoes = movimentacoes.filter((m) => !(m.origem && m.origem.id === id));
+  salvarDados();
+  atualizarTela();
+  toast("Registro excluído.");
+}
+
+/* --- 1. Combustível --- */
+function calcularCombustivel() {
+  const kmInicial = num("kmInicial"), kmFinal = num("kmFinal"), consumo = num("consumo"), preco = num("precoLitro");
+  if (![kmInicial, kmFinal, consumo, preco].every(isFinite)) return null;
+  if (kmInicial < 0 || kmFinal <= kmInicial || consumo <= 0 || preco <= 0) return null;
+  const distancia = kmFinal - kmInicial;
+  const litros = distancia / consumo;
+  return { kmInicial, kmFinal, consumo, preco, distancia: arred(distancia), litros: arred(litros), custo: arred(litros * preco) };
+}
+
+function renderizarResultadoCombustivel() {
+  const area = $("resultadoCombustivel");
+  area.innerHTML = "";
+  const r = calcularCombustivel();
+  if (!r) {
+    area.append(el("p", "dica", "Preencha km inicial, km final (maior que o inicial), consumo e preço para ver o cálculo."));
+    return;
+  }
+  const ganhos = ganhosDoDia($("dataCombustivel").value);
+  const lucro = arred(ganhos - r.custo);
+  area.append(
+    linhaInfo("Distância percorrida", formatarNumero(r.distancia) + " km"),
+    linhaInfo("Litros consumidos", formatarNumero(r.litros) + " L"),
+    linhaInfo("Custo do combustível", formatarMoeda(r.custo), "d"),
+    linhaInfo("Ganhos do dia (registrados)", formatarMoeda(ganhos), "g"),
+    linhaInfo("Lucro após combustível", formatarMoeda(lucro), lucro < 0 ? "l d" : "l g")
+  );
+}
+
+function aoSalvarCombustivel(ev) {
+  ev.preventDefault();
+  const r = calcularCombustivel(), data = $("dataCombustivel").value;
+  if (!r || !data) {
+    aviso("mensagemCombustivel", "Confira os campos: o km final deve ser maior que o inicial e os demais valores devem ser positivos.", true);
+    return;
+  }
+  const id = gerarId();
+  extras.combustivel.push({ id, data, veiculoId: veiculoAtivo, ...r });
+  salvarExtras("combustivel");
+  if ($("lancarCombustivel").checked) {
+    lancarDespesa("Combustível • " + formatarNumero(r.distancia) + " km • " + nomeVeiculo(), "Combustível", r.custo, data, { tipo: "combustivel", id });
+  }
+  $("kmInicial").value = r.kmFinal; // o próximo trajeto começa onde este terminou
+  $("kmFinal").value = "";
+  aviso("mensagemCombustivel", "Cálculo salvo!", false);
+  atualizarTela();
+}
+
+function renderizarListaCombustivel() {
+  const ul = $("listaCombustivel");
+  ul.innerHTML = "";
+  const doVeiculo = extras.combustivel.filter((c) => c.veiculoId === veiculoAtivo);
+  if (!doVeiculo.length) return listaVazia(ul, "Nenhum abastecimento deste veículo ainda.");
+  maisRecentes(doVeiculo).forEach((c) => ul.append(criarItem(
+    "despesa",
+    formatarData(c.data) + " • " + formatarNumero(c.distancia) + " km",
+    formatarNumero(c.litros) + " L a " + formatarMoeda(c.preco) + "/L • " + formatarNumero(c.consumo) + " km/L",
+    formatarMoeda(c.custo),
+    () => removerExtra("combustivel", c.id)
+  )));
+}
+
+/* --- 2. Manutenção --- */
+// Maior quilometragem já registrada (abastecimentos e manutenções)
+// (kmAtual agora é calculado por veículo, na seção 6.3)
+
+function aoSalvarManutencao(ev) {
+  ev.preventDefault();
+  const tipo = $("tipoManut").value, desc = $("descManut").value.trim();
+  const valor = num("valorManut"), km = num("kmManut"), data = $("dataManut").value;
+  const intervaloKm = num("lembreteKm"), proxData = $("lembreteData").value;
+
+  if (tipo === "Outra" && desc === "") return aviso("mensagemManut", "Descreva a manutenção.", true);
+  if (!isFinite(valor) || valor < 0) return aviso("mensagemManut", "Informe o valor (pode ser 0).", true);
+  if (!isFinite(km) || km < 0) return aviso("mensagemManut", "Informe a quilometragem do veículo.", true);
+  if (!data) return aviso("mensagemManut", "Informe a data.", true);
+
+  const item = { id: gerarId(), tipo, descricao: desc || tipo, valor: arred(valor), km, data, veiculoId: veiculoAtivo };
+  if (isFinite(intervaloKm) && intervaloKm > 0) item.proxKm = km + intervaloKm;
+  if (proxData) item.proxData = proxData;
+
+  extras.manutencoes.push(item);
+  salvarExtras("manutencoes");
+  if (item.valor > 0) lancarDespesa(item.descricao + " • " + nomeVeiculo(), "Manutenção veicular", item.valor, data, { tipo: "manutencao", id: item.id });
+
+  ["descManut", "valorManut", "lembreteKm", "lembreteData"].forEach((id) => { $(id).value = ""; });
+  aviso("mensagemManut", "Manutenção registrada!", false);
+  atualizarTela();
+}
+
+// Considera só a manutenção mais recente de cada tipo e verifica se o lembrete venceu
+function calcularLembretes() {
+  const ultimos = {};
+  extras.manutencoes.forEach((m) => {
+    const chave = m.veiculoId + "|" + (m.tipo === "Outra" ? m.descricao : m.tipo);
+    const a = ultimos[chave];
+    if (!a || m.data > a.data || (m.data === a.data && m.km >= a.km)) ultimos[chave] = m;
+  });
+  const hoje = dataParaTexto(new Date());
+  const limite = new Date();
+  limite.setDate(limite.getDate() + 7);
+  const em7dias = dataParaTexto(limite);
+  const ordem = { vencido: 0, breve: 1, ok: 2 };
+
+  return Object.values(ultimos)
+    .filter((m) => m.proxKm !== undefined || m.proxData)
+    .map((m) => {
+      let estado = "ok";
+      const motivos = [];
+      if (m.proxData) {
+        if (m.proxData < hoje) { estado = "vencido"; motivos.push("venceu em " + formatarData(m.proxData)); }
+        else { motivos.push("até " + formatarData(m.proxData)); if (m.proxData <= em7dias) estado = "breve"; }
+      }
+      if (m.proxKm !== undefined) {
+        const falta = m.proxKm - kmDoVeiculo(m.veiculoId);
+        if (falta <= 0) { estado = "vencido"; motivos.push("passou de " + formatarNumero(m.proxKm) + " km"); }
+        else { motivos.push("faltam " + formatarNumero(falta) + " km"); if (falta <= 300 && estado === "ok") estado = "breve"; }
+      }
+      return { m, estado, texto: motivos.join(" • ") };
+    })
+    .sort((a, b) => ordem[a.estado] - ordem[b.estado]);
+}
+
+function renderizarManutencao() {
+  $("kmAtual").textContent = kmAtual() > 0
+    ? "Km atual estimado: " + formatarNumero(kmAtual()) + " km (maior quilometragem registrada)."
+    : "Registre abastecimentos ou manutenções com quilometragem para acompanhar o km do veículo.";
+
+  const todos = calcularLembretes(), lembretes = todos.filter((l) => l.m.veiculoId === veiculoAtivo), ul = $("listaLembretes");
+  ul.innerHTML = "";
+  if (!lembretes.length) listaVazia(ul, "Nenhum lembrete programado.");
+  const rotulos = { vencido: "Vencido", breve: "Em breve", ok: "Em dia" };
+  lembretes.forEach((l) => ul.append(criarItem(l.estado, l.m.descricao, l.texto, rotulos[l.estado])));
+
+  const urgentes = todos.filter((l) => l.estado !== "ok").length;
+  const alerta = $("alertaManutencao");
+  alerta.hidden = urgentes === 0;
+  alerta.textContent = "🔧 " + urgentes + (urgentes === 1 ? " manutenção vencida ou perto de vencer" : " manutenções vencidas ou perto de vencer") + ". Veja a seção Manutenção.";
+
+  const hist = $("listaManutencao");
+  hist.innerHTML = "";
+  const doVeiculo = extras.manutencoes.filter((m) => m.veiculoId === veiculoAtivo);
+  if (!doVeiculo.length) return listaVazia(hist, "Nenhuma manutenção deste veículo ainda.");
+  maisRecentes(doVeiculo).forEach((m) => hist.append(criarItem(
+    "neutro", m.descricao, formatarData(m.data) + " • " + formatarNumero(m.km) + " km", formatarMoeda(m.valor),
+    () => removerExtra("manutencoes", m.id)
+  )));
+}
+
+/* --- 3. Gráficos (canvas, sem bibliotecas) --- */
+function intervaloFiltro() {
+  const periodo = $("filtroPeriodo").value, p = obterPeriodos();
+  if (periodo === "semana") return p[1];
+  if (periodo === "mes") return p[2];
+  return { inicio: "", fim: "" };
+}
+const foraDoIntervalo = (data, i) => (i.inicio && data < i.inicio) || (i.fim && data > i.fim);
+
+// Início da semana (segunda), mês ou o próprio dia
+function chaveGrupo(data, agrup) {
+  if (agrup === "mes") return data.slice(0, 7);
+  if (agrup === "semana") {
+    const [a, m, d] = data.split("-").map(Number);
+    const dt = new Date(a, m - 1, d);
+    dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
+    return dataParaTexto(dt);
+  }
+  return data;
+}
+
+function rotuloGrupo(chave, agrup) {
+  const [a, m, d] = chave.split("-");
+  if (agrup === "mes") return m + "/" + a;
+  return (agrup === "semana" ? "sem " : "") + d + "/" + m;
+}
+
+// Soma ganhos e despesas por grupo, respeitando o filtro de período
+function agruparMovimentacoes(agrup, intervalo) {
+  const grupos = {};
+  movimentacoes.forEach((m) => {
+    if (intervalo && foraDoIntervalo(m.data, intervalo)) return;
+    const k = chaveGrupo(m.data, agrup);
+    grupos[k] = grupos[k] || { g: 0, d: 0 };
+    if (m.tipo === "ganho") grupos[k].g += m.valor; else grupos[k].d += m.valor;
+  });
+  return grupos;
+}
+
+function dadosGrafico() {
+  const agrup = $("filtroAgrupar").value;
+  const grupos = agruparMovimentacoes(agrup, intervaloFiltro());
+  let acumulado = 0;
+  return Object.keys(grupos).sort().map((k) => {
+    const lucro = arred(grupos[k].g - grupos[k].d);
+    acumulado = arred(acumulado + lucro);
+    return { rotulo: rotuloGrupo(k, agrup), g: arred(grupos[k].g), d: arred(grupos[k].d), l: lucro, a: acumulado };
+  });
+}
+
+function desenharGrafico() {
+  const canvas = $("canvasGrafico"), categorias = tipoGrafico === "categorias";
+  canvas.hidden = categorias;
+  $("graficoCategorias").hidden = !categorias;
+  $("legendaGrafico").hidden = categorias;
+  $("tooltipGrafico").hidden = true;
+  if (categorias) return renderizarCategorias();
+
+  const pts = dadosGrafico();
+  const larg = canvas.clientWidth || 300, alt = 260, dpr = window.devicePixelRatio || 1;
+  canvas.width = larg * dpr;
+  canvas.height = alt * dpr;
+  const c = canvas.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.font = "12px system-ui, sans-serif";
+  c.textBaseline = "middle";
+
+  const esq = 56, dir = 8, topo = 10, base = 30;
+  layoutGrafico = { pts, esq, larg, slot: 1 };
+  if (!pts.length) {
+    c.fillStyle = COR_TEXTO; c.textAlign = "center";
+    c.fillText("Sem movimentações neste período.", larg / 2, alt / 2);
+    return;
+  }
+
+  const series = tipoGrafico === "barras" ? [(p) => p.g, (p) => p.d] : tipoGrafico === "lucro" ? [(p) => p.l] : [(p) => p.a];
+  const valores = pts.flatMap((p) => series.map((f) => f(p)));
+  let max = Math.max(0, ...valores);
+  const min = Math.min(0, ...valores);
+  if (max === min) max = 1;
+  const w = larg - esq - dir, h = alt - topo - base, slot = w / pts.length;
+  layoutGrafico.slot = slot;
+  const y = (v) => topo + ((max - v) / (max - min)) * h;
+
+  // Linhas de grade e valores do eixo vertical
+  c.textAlign = "right"; c.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = min + ((max - min) * i) / 4;
+    c.strokeStyle = COR_GRADE; c.fillStyle = COR_TEXTO;
+    c.beginPath(); c.moveTo(esq, y(v)); c.lineTo(larg - dir, y(v)); c.stroke();
+    c.fillText(formatarNumero(Math.round(v)), esq - 6, y(v));
+  }
+  c.strokeStyle = "#5b4b8a";
+  c.beginPath(); c.moveTo(esq, y(0)); c.lineTo(larg - dir, y(0)); c.stroke();
+
+  // Rótulos do eixo horizontal (pula alguns quando há muitos)
+  c.textAlign = "center"; c.fillStyle = COR_TEXTO;
+  const passo = Math.ceil(pts.length / Math.max(1, Math.floor(w / 52)));
+  pts.forEach((p, i) => { if (i % passo === 0) c.fillText(p.rotulo, esq + (i + 0.5) * slot, alt - base / 2); });
+
+  if (tipoGrafico === "evolucao") {
+    c.strokeStyle = COR_VIOLETA; c.lineWidth = 2.5; c.beginPath();
+    pts.forEach((p, i) => { const px = esq + (i + 0.5) * slot; if (i) c.lineTo(px, y(p.a)); else c.moveTo(px, y(p.a)); });
+    c.stroke();
+    c.fillStyle = COR_VIOLETA;
+    pts.forEach((p, i) => { c.beginPath(); c.arc(esq + (i + 0.5) * slot, y(p.a), 3.5, 0, Math.PI * 2); c.fill(); });
+  } else {
+    const largBarra = (slot * 0.7) / series.length;
+    pts.forEach((p, i) => series.forEach((f, j) => {
+      const v = f(p);
+      c.fillStyle = tipoGrafico === "barras" ? (j === 0 ? COR_VERDE : COR_VERMELHO) : (v >= 0 ? COR_VERDE : COR_VERMELHO);
+      c.fillRect(esq + i * slot + slot * 0.15 + j * largBarra, Math.min(y(v), y(0)), largBarra, Math.abs(y(v) - y(0)) || 1);
+    }));
+  }
+}
+
+// Balão com os valores do grupo tocado ou sob o mouse
+function mostrarTooltip(ev) {
+  const t = $("tooltipGrafico"), L = layoutGrafico;
+  if (!L || !L.pts.length || tipoGrafico === "categorias") return;
+  const x = ev.clientX - $("canvasGrafico").getBoundingClientRect().left;
+  const i = Math.floor((x - L.esq) / L.slot);
+  if (i < 0 || i >= L.pts.length) { t.hidden = true; return; }
+  const p = L.pts[i];
+  const linhas = [el("strong", "", p.rotulo), el("span", "", "Ganhos: " + formatarMoeda(p.g)), el("span", "", "Despesas: " + formatarMoeda(p.d)), el("span", "", "Lucro: " + formatarMoeda(p.l))];
+  if (tipoGrafico === "evolucao") linhas.push(el("span", "", "Acumulado: " + formatarMoeda(p.a)));
+  t.replaceChildren(...linhas);
+  t.hidden = false;
+  t.style.left = Math.min(Math.max(L.esq + (i + 0.5) * L.slot, 80), L.larg - 80) + "px";
+}
+
+// Despesas por categoria, da maior para a menor (respeita o filtro de período)
+function renderizarCategorias() {
+  const box = $("graficoCategorias"), intervalo = intervaloFiltro(), totais = {};
+  let soma = 0;
+  box.innerHTML = "";
+  movimentacoes.forEach((m) => {
+    if (m.tipo !== "despesa" || foraDoIntervalo(m.data, intervalo)) return;
+    totais[m.categoria] = (totais[m.categoria] || 0) + m.valor;
+    soma += m.valor;
+  });
+  const ordem = Object.keys(totais).sort((a, b) => totais[b] - totais[a]);
+  if (!ordem.length) { box.append(el("p", "dica", "Sem despesas neste período.")); return; }
+  ordem.forEach((cat) => {
+    const pct = (totais[cat] / soma) * 100;
+    const topo = el("div", "cat-topo");
+    topo.append(el("span", "", cat), el("span", "", formatarMoeda(arred(totais[cat])) + " • " + Math.round(pct) + "%"));
+    const barra = el("div", "barra"), cheio = el("div", "barra-preenchimento");
+    cheio.style.width = pct + "%";
+    cheio.style.background = "var(--vermelho)";
+    barra.append(cheio);
+    const linha = el("div", "cat-linha");
+    linha.append(topo, barra);
+    box.append(linha);
+  });
+}
+
+/* --- 4. Jornada de trabalho --- */
+const paraMinutos = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+const horasTexto = (min) => Math.floor(min / 60) + "h" + String(min % 60).padStart(2, "0");
+
+function aoSalvarTurno(ev) {
+  ev.preventDefault();
+  const data = $("dataTurno").value, ini = $("inicioTurno").value, fim = $("fimTurno").value;
+  const ganhos = num("ganhosTurno"), entregas = num("entregasTurno"), km = num("kmTurno");
+
+  if (!data || !ini || !fim) return aviso("mensagemTurno", "Informe data, início e término.", true);
+  let minutos = paraMinutos(fim) - paraMinutos(ini);
+  if (minutos === 0) return aviso("mensagemTurno", "Início e término não podem ser iguais.", true);
+  if (minutos < 0) minutos += 1440; // turno que passa da meia-noite
+  minutos = Math.max(1, minutos - pausaPendente); // desconta as pausas (duração efetiva)
+  if (!isFinite(ganhos) || ganhos < 0) return aviso("mensagemTurno", "Informe os ganhos do turno.", true);
+  if (!Number.isInteger(entregas) || entregas < 0) return aviso("mensagemTurno", "Informe a quantidade de entregas (número inteiro).", true);
+
+  const automatico = prefillTurno && prefillTurno.data === data && prefillTurno.ini === ini && prefillTurno.fim === fim;
+  extras.turnos.push({ id: gerarId(), data, inicio: ini, fim, minutos, ganhos: arred(ganhos), entregas, pausaMin: pausaPendente, registro: automatico ? "automático" : "manual", ...(isFinite(km) && km >= 0 ? { km } : {}) });
+  pausaPendente = 0;
+  prefillTurno = null;
+  salvarExtras("turnos");
+  $("ganhosTurno").value = "";
+  $("entregasTurno").value = "";
+  $("kmTurno").value = "";
+  aviso("mensagemTurno", "Turno registrado!", false);
+  atualizarTela();
+}
+
+function renderizarTurnos() {
+  const resumo = $("resumoTurnos"), ul = $("listaTurnos");
+  resumo.innerHTML = "";
+  ul.innerHTML = "";
+  if (!extras.turnos.length) {
+    resumo.append(el("p", "dica", "Registre um turno para ver suas médias."));
+    return listaVazia(ul, "Nenhum turno registrado ainda.");
+  }
+  const t = extras.turnos.reduce((s, x) => ({ min: s.min + x.minutos, g: s.g + x.ganhos, e: s.e + x.entregas }), { min: 0, g: 0, e: 0 });
+  resumo.append(
+    linhaInfo("Horas trabalhadas (total)", horasTexto(t.min)),
+    linhaInfo("Ganhos nos turnos", formatarMoeda(arred(t.g)), "g"),
+    linhaInfo("Média por hora", formatarMoeda(arred(t.g / (t.min / 60))), "g"),
+    linhaInfo("Média por entrega", t.e > 0 ? formatarMoeda(arred(t.g / t.e)) : "—", "l g")
+  );
+  maisRecentes(extras.turnos).forEach((x) => {
+    const lancado = Boolean(movimentacaoDoTurno(x.id));
+    const li = criarItem(
+      "ganho",
+      formatarData(x.data) + " • " + x.inicio + " às " + x.fim + " (" + horasTexto(x.minutos) + ")" + (x.registro === "manual" ? " • horário manual" : ""),
+      formatarMoeda(arred(x.ganhos / (x.minutos / 60))) + "/h • " + x.entregas + " entregas" + (x.entregas > 0 ? " • " + formatarMoeda(arred(x.ganhos / x.entregas)) + "/entrega" : "") + (lancado ? " • ganho lançado" : ""),
+      formatarMoeda(x.ganhos),
+      () => removerExtra("turnos", x.id)
+    );
+    if (!lancado && x.ganhos > 0) {   // permite lançar depois (turno finalizado sem lançar)
+      const b = el("button", "btn-lancar", "Lançar ganho");
+      b.type = "button";
+      b.addEventListener("click", () => lancarGanhoDoHistorico(x));
+      li.insertBefore(b, li.querySelector(".btn-excluir"));
+    }
+    ul.append(li);
+  });
+}
+
+function lancarGanhoDoHistorico(turno) {
+  if (!confirmarPossivelDuplicidade(turno)) return;
+  const r = sincronizarMovimentacaoDoTurno(turno, CATEGORIA_GANHO_TURNO);
+  if (r === "criado") toast(formatarMoeda(turno.ganhos) + " lançados em " + formatarData(turno.data) + ".");
+  atualizarTela();
+}
+
+/* --- 5. Cofrinho de objetivos --- */
+function aoCriarObjetivo(ev) {
+  ev.preventDefault();
+  const nome = $("nomeObjetivo").value.trim(), meta = num("metaObjetivo");
+  if (nome === "") return aviso("mensagemCofrinho", "Dê um nome ao objetivo.", true);
+  if (!isFinite(meta) || meta <= 0) return aviso("mensagemCofrinho", "Informe um valor desejado maior que zero.", true);
+  extras.objetivos.push({ id: gerarId(), nome: nome.slice(0, 40), meta: arred(meta), guardado: 0 });
+  salvarExtras("objetivos");
+  $("nomeObjetivo").value = "";
+  $("metaObjetivo").value = "";
+  aviso("mensagemCofrinho", "Objetivo criado!", false);
+  atualizarExtras();
+}
+
+// sinal = 1 (guardar) ou -1 (retirar)
+function movimentarObjetivo(id, sinal, valor) {
+  const o = extras.objetivos.find((x) => x.id === id);
+  if (!o) return;
+  if (!isFinite(valor) || valor <= 0) return aviso("mensagemCofrinho", "Informe um valor maior que zero.", true);
+  if (sinal < 0 && valor > o.guardado) return aviso("mensagemCofrinho", "Você só pode retirar até " + formatarMoeda(o.guardado) + ".", true);
+  o.guardado = arred(o.guardado + sinal * valor);
+  salvarExtras("objetivos");
+  aviso("mensagemCofrinho", "", false);
+  toast(sinal > 0 ? "Valor guardado no cofrinho!" : "Valor retirado do cofrinho.");
+  atualizarExtras();
+}
+
+function renderizarObjetivos() {
+  const box = $("listaObjetivos");
+  box.innerHTML = "";
+  if (!extras.objetivos.length) { box.append(el("p", "dica", "Nenhum objetivo ainda. Crie o primeiro acima!")); return; }
+  extras.objetivos.forEach((o) => {
+    const pct = Math.min(100, (o.guardado / o.meta) * 100), falta = Math.max(0, arred(o.meta - o.guardado));
+    const barra = el("div", "barra"), cheio = el("div", "barra-preenchimento");
+    cheio.style.width = pct + "%";
+    barra.append(cheio);
+
+    const campo = el("input");
+    campo.type = "number"; campo.min = "0.01"; campo.step = "0.01"; campo.placeholder = "Valor (R$)"; campo.inputMode = "decimal";
+    const guardar = el("button", "btn-secundario", "➕ Guardar");
+    const retirar = el("button", "btn-secundario", "➖ Retirar");
+    const excluir = el("button", "btn-excluir", "Excluir");
+    [guardar, retirar, excluir].forEach((b) => { b.type = "button"; });
+    guardar.onclick = () => movimentarObjetivo(o.id, 1, parseFloat(campo.value));
+    retirar.onclick = () => movimentarObjetivo(o.id, -1, parseFloat(campo.value));
+    excluir.onclick = () => { if (confirm("Excluir este objetivo?")) removerExtra("objetivos", o.id); };
+    const acoes = el("div", "acoes-objetivo");
+    acoes.append(campo, guardar, retirar, excluir);
+
+    const card = el("div", "objetivo");
+    card.append(
+      el("h3", "", o.nome + (falta === 0 ? " 🎉" : "")),
+      barra,
+      el("p", "progresso-texto", Math.floor(pct) + "% • " + formatarMoeda(o.guardado) + " de " + formatarMoeda(o.meta)),
+      el("p", "dica", falta === 0 ? "Objetivo alcançado!" : "Faltam " + formatarMoeda(falta)),
+      acoes
+    );
+    box.append(card);
+  });
+}
+
+/* --- 6. Recordes pessoais --- */
+// Encontra o maior valor de um objeto de grupos: devolve { chave, valor } ou null
+function melhorDe(obj, valorFn) {
+  let melhor = null;
+  Object.keys(obj).forEach((k) => {
+    const v = valorFn(obj[k]);
+    if (melhor === null || v > melhor.valor) melhor = { chave: k, valor: v };
+  });
+  return melhor;
+}
+
+function renderizarRecordes() {
+  const dias = agruparMovimentacoes("dia"), semanas = agruparMovimentacoes("semana"), meses = agruparMovimentacoes("mes");
+  const entregas = {}, porHora = {};
+  extras.turnos.forEach((t) => {
+    entregas[t.data] = (entregas[t.data] || 0) + t.entregas;
+    if (t.minutos > 0) porHora[t.id] = { v: t.ganhos / (t.minutos / 60), data: t.data };
+  });
+  const moeda = (v) => formatarMoeda(arred(v));
+  const lista = [
+    ["🏆 Melhor dia de faturamento", melhorDe(dias, (x) => x.g), moeda, formatarData],
+    ["📅 Melhor semana", melhorDe(semanas, (x) => x.g), moeda, (k) => "Semana de " + formatarData(k)],
+    ["🗓️ Melhor mês", melhorDe(meses, (x) => x.g), moeda, (k) => k.slice(5) + "/" + k.slice(0, 4)],
+    ["📦 Mais entregas em um dia", melhorDe(entregas, (x) => x), (v) => v + " entregas", formatarData],
+    ["💰 Maior lucro líquido diário", melhorDe(dias, (x) => x.g - x.d), moeda, formatarData],
+    ["⚡ Recorde de ganhos por hora", melhorDe(porHora, (x) => x.v), (v) => moeda(v) + "/h", (k) => formatarData(porHora[k].data)]
+  ];
+  const grade = $("gradeRecordes");
+  grade.innerHTML = "";
+  lista.forEach(([titulo, m, formatarValor, formatarChave]) => {
+    const ok = m && m.valor > 0;
+    const card = el("div", "stat");
+    card.append(el("span", "", titulo), el("strong", "", ok ? formatarValor(m.valor) : "—"), el("small", "", ok ? formatarChave(m.chave) : "Sem dados ainda"));
+    grade.append(card);
+  });
+}
+
+/* --- Backup: inclui os dados novos (e continua aceitando backups antigos) --- */
+const temDadosExtras = () => Object.keys(extras).some((n) => extras[n].length > 0) || metaSemanal > 0;
+
+function importarExtras(pacote) {
+  // Se o app só tem o veículo padrão vazio, ele sai para dar lugar aos veículos do backup
+  const padrao = extras.veiculos[0];
+  if (Array.isArray(pacote.veiculos) && pacote.veiculos.length && extras.veiculos.length === 1 && padrao.apelido === "Minha moto" && !padrao.marca && padrao.kmAtual === 0
+      && !extras.combustivel.some((c) => c.veiculoId === padrao.id) && !extras.manutencoes.some((m) => m.veiculoId === padrao.id)) {
+    extras.veiculos = [];
+  }
+  Object.keys(extras).forEach((nome) => {
+    const lista = Array.isArray(pacote[nome]) ? pacote[nome] : [];
+    const ids = new Set(extras[nome].map((i) => i.id));
+    lista.forEach((i) => {
+      if (itemExtraValido(nome, i) && !ids.has(i.id)) { extras[nome].push(i); ids.add(i.id); }
+    });
+    salvarExtras(nome);
+  });
+  const meta = parseFloat(pacote.metaSemanal);
+  if (metaSemanal <= 0 && isFinite(meta) && meta > 0) {
+    metaSemanal = meta;
+    try { localStorage.setItem(CHAVE_META, String(meta)); } catch (erro) { /* ignora */ }
+    $("campoMeta").value = meta;
+  }
+  const mensal = parseFloat(pacote.metaMensal);
+  if (metaMensal <= 0 && isFinite(mensal) && mensal > 0) {
+    metaMensal = mensal;
+    try { localStorage.setItem(CHAVE_META_MENSAL, String(mensal)); } catch (erro) { /* ignora */ }
+    $("campoMetaMensal").value = mensal;
+  }
+  prepararVeiculos(); // liga registros importados sem veículo ao veículo padrão
+}
+
+/* ---------- 6.3 Passo 2: garagem, turno ao vivo, metas, resumo e alertas ---------- */
+
+// Planos: preparado para o futuro, mas NADA é bloqueado ou cobrado por enquanto.
+const PLANOS = { free: { maxVeiculos: 1 }, premium: { maxVeiculos: Infinity } };
+const PLANO_ATUAL = "free";
+const APLICAR_LIMITE_PLANO = false;
+
+const CHAVE_VEICULO_ATIVO = "motograna:veiculoAtivo";
+const CHAVE_TURNO = "motograna:turnoAtual";
+const CHAVE_META_MENSAL = "motograna:metaMensal";
+let veiculoAtivo = "";
+let turnoAtual = null;   // { inicio: ms, pausas: [{ de: ms, ate: ms | null }] }
+let metaMensal = 0;
+let pausaPendente = 0;   // minutos de pausa do turno encerrado, usados ao registrar o turno
+const CHAVE_TURNO_ENCERRADO = "motograna:turnoEncerrado";
+let turnoEncerrado = null; // { id, inicio: ms, fim: ms, pausaMin } - encerrado, aguardando o resumo (não se perde se a página fechar)
+let prefillTurno = null; // horários preenchidos pelo cronômetro (para saber se foram corrigidos à mão)
+
+const moeda = (v) => formatarMoeda(arred(v));
+const veiculoAtivoId = () => veiculoAtivo;
+const nomeDoVeiculo = (id) => { const v = extras.veiculos.find((x) => x.id === id); return v ? v.apelido : "Veículo"; };
+const nomeVeiculo = () => nomeDoVeiculo(veiculoAtivo);
+const kmDoVeiculo = (vid) => Math.max(0,
+  ...extras.veiculos.filter((v) => v.id === vid).map((v) => v.kmAtual),
+  ...extras.combustivel.filter((c) => c.veiculoId === vid).map((c) => c.kmFinal),
+  ...extras.manutencoes.filter((m) => m.veiculoId === vid).map((m) => m.km));
+const kmAtual = () => kmDoVeiculo(veiculoAtivo);
+
+/* --- Garagem --- */
+// Garante um veículo padrão e liga a ele os registros antigos (sem veículo)
+function prepararVeiculos() {
+  if (!extras.veiculos.length) {
+    extras.veiculos.push({ id: gerarId(), tipo: "Motocicleta", marca: "", modelo: "", ano: "", placa: "", apelido: "Minha moto", kmAtual: 0 });
+    salvarExtras("veiculos");
+  }
+  const padrao = extras.veiculos[0].id;
+  ["combustivel", "manutencoes"].forEach((nome) => {
+    let mudou = false;
+    extras[nome].forEach((i) => { if (!i.veiculoId) { i.veiculoId = padrao; mudou = true; } });
+    if (mudou) salvarExtras(nome);
+  });
+  let salvo = "";
+  try { salvo = localStorage.getItem(CHAVE_VEICULO_ATIVO) || ""; } catch (erro) { /* ignora */ }
+  veiculoAtivo = extras.veiculos.some((v) => v.id === salvo) ? salvo : padrao;
+}
+
+function definirVeiculoAtivo(id) {
+  veiculoAtivo = id;
+  try { localStorage.setItem(CHAVE_VEICULO_ATIVO, id); } catch (erro) { /* ignora */ }
+}
+
+function aoSalvarVeiculo(ev) {
+  ev.preventDefault();
+  const apelido = $("apelidoVeic").value.trim(), km = num("kmVeic"), ano = $("anoVeic").value.trim();
+  if (apelido === "") return aviso("mensagemVeiculo", "Dê um apelido ao veículo.", true);
+  if (ano !== "" && !(Number(ano) >= 1950 && Number(ano) <= new Date().getFullYear() + 1)) return aviso("mensagemVeiculo", "Informe um ano válido.", true);
+  if (isFinite(km) && km < 0) return aviso("mensagemVeiculo", "A quilometragem não pode ser negativa.", true);
+  if (APLICAR_LIMITE_PLANO && extras.veiculos.length >= PLANOS[PLANO_ATUAL].maxVeiculos) return aviso("mensagemVeiculo", "Seu plano permite apenas " + PLANOS[PLANO_ATUAL].maxVeiculos + " veículo(s).", true);
+  const v = { id: gerarId(), tipo: $("tipoVeic").value, marca: $("marcaVeic").value.trim(), modelo: $("modeloVeic").value.trim(), ano, placa: $("placaVeic").value.trim().toUpperCase(), apelido: apelido.slice(0, 30), kmAtual: isFinite(km) ? km : 0 };
+  extras.veiculos.push(v);
+  salvarExtras("veiculos");
+  definirVeiculoAtivo(v.id);
+  $("formVeiculo").reset();
+  $("formVeiculo").closest("details").open = false;
+  aviso("mensagemVeiculo", "Veículo cadastrado!", false);
+  atualizarTela();
+}
+
+function aoExcluirVeiculo() {
+  const id = veiculoAtivo;
+  if (extras.veiculos.length <= 1) return toast("Mantenha ao menos um veículo cadastrado.", true);
+  if (extras.combustivel.some((c) => c.veiculoId === id) || extras.manutencoes.some((m) => m.veiculoId === id)) {
+    return toast("Exclua antes os abastecimentos e manutenções deste veículo.", true);
+  }
+  if (!confirm("Excluir o veículo " + nomeVeiculo() + "?")) return;
+  extras.veiculos = extras.veiculos.filter((v) => v.id !== id);
+  salvarExtras("veiculos");
+  definirVeiculoAtivo(extras.veiculos[0].id);
+  atualizarTela();
+  toast("Veículo excluído.");
+}
+
+// Custo por km: SEMPRE uma estimativa parcial (só combustível e manutenção do veículo)
+function custoPorKm(vid) {
+  const comb = extras.combustivel.filter((c) => c.veiculoId === vid), man = extras.manutencoes.filter((m) => m.veiculoId === vid);
+  const kms = [...comb.flatMap((c) => [c.kmInicial, c.kmFinal]), ...man.map((m) => m.km)];
+  const km = kms.length ? Math.max(...kms) - Math.min(...kms) : 0;
+  const custo = comb.reduce((s, c) => s + c.custo, 0) + man.reduce((s, m) => s + m.valor, 0);
+  return km > 0 && custo > 0 ? { valor: custo / km, km } : null;
+}
+
+function renderizarGaragem() {
+  const sel = $("veiculoAtivo"), box = $("resumoVeiculo");
+  sel.innerHTML = "";
+  box.innerHTML = "";
+  extras.veiculos.forEach((v) => { const o = el("option", "", v.apelido + (v.placa ? " • " + v.placa : "")); o.value = v.id; sel.append(o); });
+  sel.value = veiculoAtivo;
+  const v = extras.veiculos.find((x) => x.id === veiculoAtivo);
+  if (!v) return;
+  const c = custoPorKm(v.id);
+  box.append(
+    linhaInfo(v.tipo, [v.marca, v.modelo, v.ano].filter(Boolean).join(" ") || "—"),
+    linhaInfo("Km atual", formatarNumero(kmDoVeiculo(v.id)) + " km"),
+    linhaInfo("Custo por km (parcial)", c ? moeda(c.valor) + "/km" : "dados insuficientes", "l")
+  );
+  box.append(el("p", "dica", c ? "Estimativa parcial: usa combustível e manutenção de " + formatarNumero(c.km) + " km registrados. Outras despesas não entram." : "Registre abastecimentos e manutenções com quilometragem para estimar."));
+}
+
+/* --- Turno ao vivo (iniciar, pausar, encerrar) --- */
+function carregarTurnoAtual() {
+  try {
+    const t = JSON.parse(localStorage.getItem(CHAVE_TURNO));
+    turnoAtual = t && typeof t.inicio === "number" && Array.isArray(t.pausas) ? t : null;
+  } catch (erro) { turnoAtual = null; }
+}
+function salvarTurnoAtual() {
+  try {
+    if (turnoAtual) localStorage.setItem(CHAVE_TURNO, JSON.stringify(turnoAtual));
+    else localStorage.removeItem(CHAVE_TURNO);
+  } catch (erro) { /* ignora */ }
+}
+const emPausa = () => Boolean(turnoAtual) && turnoAtual.pausas.some((p) => p.ate === null);
+const msPausado = (agora) => turnoAtual.pausas.reduce((s, p) => s + ((p.ate === null ? agora : p.ate) - p.de), 0);
+const horaLocal = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
+const formatarCrono = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map((n) => String(n).padStart(2, "0")).join(":"); };
+
+function renderizarTurnoAtual() {
+  const agora = Date.now(), principal = $("btnTurnoPrincipal"), pausa = $("btnTurnoPausa");
+  $("btnResumoTurno").hidden = Boolean(turnoAtual) || !turnoEncerrado;
+  if (!turnoAtual) {
+    $("cronometro").textContent = "00:00:00";
+    $("estadoTurno").textContent = turnoEncerrado ? "Turno encerrado aguardando registro." : "Nenhum turno em andamento.";
+    principal.textContent = "▶ Iniciar turno";
+    pausa.hidden = true;
+    return;
+  }
+  $("cronometro").textContent = formatarCrono(agora - turnoAtual.inicio - msPausado(agora));
+  $("estadoTurno").textContent = (emPausa() ? "⏸ Em pausa • " : "Em andamento • ") + "iniciado às " + horaLocal(turnoAtual.inicio) + " de " + formatarData(dataParaTexto(new Date(turnoAtual.inicio)));
+  principal.textContent = "⏹ Encerrar turno";
+  pausa.hidden = false;
+  pausa.textContent = emPausa() ? "▶ Retomar" : "⏸ Pausar";
+}
+
+function salvarTurnoEncerrado() {
+  try {
+    if (turnoEncerrado) localStorage.setItem(CHAVE_TURNO_ENCERRADO, JSON.stringify(turnoEncerrado));
+    else localStorage.removeItem(CHAVE_TURNO_ENCERRADO);
+  } catch (erro) { /* ignora */ }
+}
+function carregarTurnoEncerrado() {
+  try {
+    const t = JSON.parse(localStorage.getItem(CHAVE_TURNO_ENCERRADO));
+    turnoEncerrado = t && typeof t.id === "string" && isFinite(t.inicio) && isFinite(t.fim) && t.fim >= t.inicio
+      ? { id: t.id, inicio: t.inicio, fim: t.fim, pausaMin: Math.max(0, Number(t.pausaMin) || 0) } : null;
+  } catch (erro) { turnoEncerrado = null; }
+}
+
+// Caminho manual (reserva): leva os dados do turno encerrado para o formulário de turno
+function preencherFormularioDoTurno(t) {
+  pausaPendente = t.pausaMin;
+  $("dataTurno").value = dataParaTexto(new Date(t.inicio));
+  $("inicioTurno").value = horaLocal(t.inicio);
+  $("fimTurno").value = horaLocal(t.fim);
+  prefillTurno = { data: $("dataTurno").value, ini: $("inicioTurno").value, fim: $("fimTurno").value };
+  $("formTurno").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function aoClicarTurnoPrincipal() {
+  if (!turnoAtual) {
+    if (turnoEncerrado) { toast("Registre o turno encerrado antes de iniciar outro."); abrirResumoTurno(); return; }
+    turnoAtual = { inicio: Date.now(), pausas: [] };
+    salvarTurnoAtual();
+    toast("Turno iniciado!");
+  } else {
+    if (!confirm("Encerrar o turno agora?")) return; // nunca encerra sem confirmação
+    const agora = Date.now();                        // data e hora do encerramento
+    turnoAtual.pausas.forEach((p) => { if (p.ate === null) p.ate = agora; });
+    turnoEncerrado = { id: gerarId(), inicio: turnoAtual.inicio, fim: agora, pausaMin: Math.round(msPausado(agora) / 60000) };
+    salvarTurnoEncerrado();                          // guardado antes de qualquer coisa: nada se perde
+    turnoAtual = null;
+    salvarTurnoAtual();
+    if (!abrirResumoTurno()) {                       // navegador sem <dialog>: segue o formulário, como antes
+      preencherFormularioDoTurno(turnoEncerrado);
+      turnoEncerrado = null;
+      salvarTurnoEncerrado();
+      toast("Turno encerrado. Informe ganhos e entregas e registre.");
+    }
+  }
+  atualizarExtras();
+}
+
+/* --- Resumo de encerramento do turno --- */
+function calcularEncerramento(t) {
+  const efetivo = Math.round((t.fim - t.inicio) / 60000) - t.pausaMin;   // duração sem as pausas
+  return {
+    efetivo: Math.min(1440, Math.max(1, efetivo)),
+    passou24h: efetivo > 1440,
+    dataInicio: dataParaTexto(new Date(t.inicio)),   // a data do turno é SEMPRE a do início
+    dataFim: dataParaTexto(new Date(t.fim))
+  };
+}
+
+function abrirResumoTurno() {
+  const dlg = $("dlgTurno");
+  if (!turnoEncerrado || typeof dlg.showModal !== "function") return false;
+  const t = turnoEncerrado, c = calcularEncerramento(t), info = $("resumoEncerramento");
+  info.innerHTML = "";
+  info.append(
+    linhaInfo("Início", formatarData(c.dataInicio) + " às " + horaLocal(t.inicio)),
+    linhaInfo("Término", formatarData(c.dataFim) + " às " + horaLocal(t.fim)),
+    linhaInfo("Duração efetiva", horasTexto(c.efetivo) + (t.pausaMin > 0 ? " (pausas: " + horasTexto(t.pausaMin) + ")" : ""))
+  );
+  const notas = [];
+  if (c.dataFim !== c.dataInicio) notas.push("O turno terminou em outro dia. Os ganhos serão contabilizados em " + formatarData(c.dataInicio) + ", a data de início.");
+  if (c.passou24h) notas.push("O turno passou de 24 h: a duração será registrada como 24 h.");
+  $("notaEncerramento").textContent = notas.join(" ");
+  ["ganhosResumo", "entregasResumo", "kmResumo"].forEach((id) => { $(id).value = ""; });
+  aplicarRemuneracao("ganhosResumo", "entregasResumo");   // com remuneração ativa, já mostra o ganho fixo
+  $("categoriaResumo").value = CATEGORIA_GANHO_TURNO;
+  aviso("msgResumo", "", false);
+  if (!dlg.open) dlg.showModal();
+  return true;
+}
+
+function registrarTurnoEncerrado(lancar) {
+  if (!turnoEncerrado) return;
+  const lerNum = (id) => ($(id).value.trim() === "" ? 0 : num(id));   // vazio = 0
+  const ganhos = lerNum("ganhosResumo"), entregas = lerNum("entregasResumo");
+  const km = $("kmResumo").value.trim() === "" ? NaN : num("kmResumo");
+  if (!isFinite(ganhos) || ganhos < 0) return aviso("msgResumo", "Informe um valor de ganhos válido.", true);
+  if (!Number.isInteger(entregas) || entregas < 0) return aviso("msgResumo", "Informe a quantidade de entregas (número inteiro).", true);
+
+  const t = turnoEncerrado, c = calcularEncerramento(t);
+  const turno = { id: t.id, data: c.dataInicio, inicio: horaLocal(t.inicio), fim: horaLocal(t.fim), minutos: c.efetivo, ganhos: arred(ganhos), entregas, pausaMin: t.pausaMin, registro: "automático", ...(isFinite(km) && km >= 0 ? { km } : {}) };
+  const vaiLancar = lancar && turno.ganhos > 0;
+  if (vaiLancar && !confirmarPossivelDuplicidade(turno)) return;   // o usuário decide; nada foi gravado ainda
+
+  if (!extras.turnos.some((x) => x.id === turno.id)) { extras.turnos.push(turno); salvarExtras("turnos"); }   // mesmo id: nunca duplica o turno
+  const resultado = vaiLancar ? sincronizarMovimentacaoDoTurno(turno, $("categoriaResumo").value) : "";
+  turnoEncerrado = null;
+  salvarTurnoEncerrado();
+  $("dlgTurno").close();
+  toast(resultado === "criado" ? "Turno registrado e " + moeda(turno.ganhos) + " lançados em " + formatarData(turno.data) + "!" : "Turno registrado!");
+  atualizarTela();
+}
+
+function aoUsarGanhosNoResumo() {
+  if (!turnoEncerrado) return;
+  const g = ganhosDoDia(calcularEncerramento(turnoEncerrado).dataInicio);
+  $("ganhosResumo").value = g > 0 ? g : "";
+  aviso("msgResumo", g > 0 ? "Esse valor já está nas suas movimentações. Use \"Registrar sem lançar ganhos\" para não contar de novo." : "Não há ganhos registrados nesta data.", g <= 0);
+}
+
+function aoPreencherFormularioDoResumo() {
+  if (!turnoEncerrado) return;
+  $("dlgTurno").close();
+  preencherFormularioDoTurno(turnoEncerrado);
+  turnoEncerrado = null;
+  salvarTurnoEncerrado();
+  toast("Informe ganhos e entregas e registre.");
+  atualizarExtras();
+}
+
+function aoClicarPausa() {
+  if (!turnoAtual) return;
+  const agora = Date.now();
+  if (emPausa()) turnoAtual.pausas.forEach((p) => { if (p.ate === null) p.ate = agora; });
+  else turnoAtual.pausas.push({ de: agora, ate: null });
+  salvarTurnoAtual();
+  renderizarTurnoAtual();
+}
+
+/* --- Meta mensal inteligente (usa só dados reais) --- */
+function carregarMetaMensal() {
+  try {
+    const v = parseFloat(localStorage.getItem(CHAVE_META_MENSAL));
+    metaMensal = isFinite(v) && v > 0 ? v : 0;
+  } catch (erro) { metaMensal = 0; }
+}
+
+function aoSalvarMetaMensal() {
+  const texto = $("campoMetaMensal").value.trim(), v = texto === "" ? 0 : parseFloat(texto);
+  if (!isFinite(v) || v < 0) return aviso("mensagemMetaMensal", "Informe um valor válido.", true);
+  metaMensal = arred(v);
+  try {
+    if (metaMensal > 0) localStorage.setItem(CHAVE_META_MENSAL, String(metaMensal));
+    else localStorage.removeItem(CHAVE_META_MENSAL);
+  } catch (erro) { return aviso("mensagemMetaMensal", "Não foi possível salvar neste navegador.", true); }
+  aviso("mensagemMetaMensal", metaMensal > 0 ? "Meta mensal salva!" : "Meta mensal removida.", false);
+  renderizarMetaMensal();
+  renderizarAlertas();
+}
+
+function renderizarMetaMensal() {
+  const box = $("resultadoMetaMensal");
+  box.innerHTML = "";
+  if (metaMensal <= 0) { box.append(el("p", "dica", "Defina uma meta mensal de lucro para ver as projeções.")); return; }
+  const hoje = new Date(), p = obterPeriodos()[2], t = calcularTotais(p.inicio, p.fim);
+  const diasMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
+  const decorridos = hoje.getDate(), restantes = diasMes - decorridos + 1;
+  const falta = arred(metaMensal - t.lucro);
+  const linhas = [
+    linhaInfo("Faturamento bruto", moeda(t.ganhos), "g"),
+    linhaInfo("Despesas", moeda(t.despesas), "d"),
+    linhaInfo("Lucro líquido", moeda(t.lucro), t.lucro < 0 ? "d" : "g"),
+    linhaInfo("Margem (lucro ÷ bruto)", t.ganhos > 0 ? Math.round((t.lucro / t.ganhos) * 100) + "%" : "—")
+  ];
+  if (falta > 0) {
+    linhas.push(linhaInfo("Falta para a meta", moeda(falta), "l"),
+      linhaInfo("Lucro por dia (" + restantes + " dias)", moeda(falta / restantes)),
+      linhaInfo("Lucro por semana", moeda(falta / (restantes / 7))));
+  } else linhas.push(linhaInfo("Meta batida! 🎉", "", "l g"));
+  const temDados = t.ganhos > 0 || t.despesas > 0;
+  linhas.push(linhaInfo("Projeção no ritmo atual", temDados ? moeda(t.lucro + (t.lucro / decorridos) * (diasMes - decorridos)) : "sem dados"));
+  const barra = el("div", "barra"), cheio = el("div", "barra-preenchimento");
+  cheio.style.width = Math.max(0, Math.min(100, (t.lucro / metaMensal) * 100)) + "%";
+  barra.append(cheio);
+  box.append(...linhas, barra);
+}
+
+/* --- Resumo do dia e lucro real --- */
+function renderizarResumoDia() {
+  const hoje = dataParaTexto(new Date()), box = $("resumoDia");
+  let ganhos = 0, comb = 0, manut = 0, outras = 0;
+  box.innerHTML = "";
+  movimentacoes.forEach((m) => {
+    if (m.data !== hoje) return;
+    if (m.tipo === "ganho") ganhos += m.valor;
+    else if (m.categoria === "Combustível") comb += m.valor;
+    else if (m.categoria.startsWith("Manutenção")) manut += m.valor;
+    else outras += m.valor;
+  });
+  const turnos = extras.turnos.filter((t) => t.data === hoje);
+  const soma = (campo) => turnos.reduce((s, t) => s + (t[campo] || 0), 0);
+  const kmAbast = extras.combustivel.filter((c) => c.data === hoje).reduce((s, c) => s + c.distancia, 0);
+  const km = soma("km") > 0 ? soma("km") : kmAbast;
+  const lucro = arred(ganhos - comb - manut - outras);
+  box.append(
+    linhaInfo("Ganhos brutos", moeda(ganhos), "g"),
+    linhaInfo("Combustível", moeda(comb), "d"),
+    linhaInfo("Manutenção", moeda(manut), "d"),
+    linhaInfo("Outras despesas", moeda(outras), "d"),
+    linhaInfo("Lucro líquido", moeda(lucro), lucro < 0 ? "l d" : "l g"),
+    linhaInfo("Entregas", String(soma("entregas"))),
+    linhaInfo("Km rodados", km > 0 ? formatarNumero(km) + " km" : "—"),
+    linhaInfo("Tempo trabalhado", soma("minutos") > 0 ? horasTexto(soma("minutos")) : "—")
+  );
+}
+
+/* --- Desempenho: comparações e médias --- */
+const deslocar = (texto, dias) => { const [a, m, d] = texto.split("-").map(Number); const dt = new Date(a, m - 1, d + dias); return dataParaTexto(dt); };
+
+function linhaComparacao(rotulo, atual, anterior) {
+  const variacao = anterior !== 0 ? (atual >= anterior ? " ▲ " : " ▼ ") + Math.abs(Math.round(((atual - anterior) / Math.abs(anterior)) * 100)) + "%" : "";
+  return linhaInfo(rotulo, moeda(atual) + " (antes " + moeda(anterior) + ")" + variacao, atual >= anterior ? "g" : "d");
+}
+
+function renderizarDesempenho() {
+  const box = $("blocoDesempenho"), p = obterPeriodos(), hoje = dataParaTexto(new Date());
+  box.innerHTML = "";
+  const lucro = (i, f) => calcularTotais(i, f).lucro;
+  const h = new Date(), mesAntes = [dataParaTexto(new Date(h.getFullYear(), h.getMonth() - 1, 1)), dataParaTexto(new Date(h.getFullYear(), h.getMonth(), 0))];
+  box.append(
+    linhaComparacao("Hoje x ontem", lucro(hoje, hoje), lucro(deslocar(hoje, -1), deslocar(hoje, -1))),
+    linhaComparacao("Semana x anterior", lucro(p[1].inicio, p[1].fim), lucro(deslocar(p[1].inicio, -7), deslocar(p[1].inicio, -1))),
+    linhaComparacao("Mês x anterior", lucro(p[2].inicio, p[2].fim), lucro(mesAntes[0], mesAntes[1]))
+  );
+  const dias = agruparMovimentacoes("dia"), chaves = Object.keys(dias);
+  if (!chaves.length) return box.append(el("p", "dica", "Registre movimentações para ver médias e o melhor dia da semana."));
+  const nomes = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"], porDia = nomes.map(() => ({ s: 0, n: 0 }));
+  let total = 0;
+  chaves.forEach((k) => {
+    const [a, m, d] = k.split("-").map(Number), w = new Date(a, m - 1, d).getDay(), l = dias[k].g - dias[k].d;
+    porDia[w].s += l; porDia[w].n++; total += l;
+  });
+  let melhor = -1;
+  porDia.forEach((x, i) => { if (x.n && (melhor < 0 || x.s / x.n > porDia[melhor].s / porDia[melhor].n)) melhor = i; });
+  box.append(linhaInfo("Média de lucro por dia trabalhado", moeda(total / chaves.length)),
+    linhaInfo("Melhor dia da semana (média)", nomes[melhor] + " • " + moeda(porDia[melhor].s / porDia[melhor].n), "l g"));
+}
+
+/* --- Central de alertas --- */
+function renderizarAlertas() {
+  const ul = $("listaAlertas"), itens = [], p = obterPeriodos();
+  ul.innerHTML = "";
+  calcularLembretes().filter((l) => l.estado !== "ok").forEach((l) => itens.push([l.estado, "🔧 " + l.m.descricao + " • " + nomeDoVeiculo(l.m.veiculoId), l.texto]));
+  if (turnoAtual) {
+    // Tempo EFETIVO (sem pausas): só passa de 12 h quem realmente trabalhou mais que isso. Turno aberto há mais de 24 h
+    // (mesmo com pausas) provavelmente foi esquecido; 24 h também é o teto usado ao registrar o turno.
+    const agora = Date.now(), aberto = (agora - turnoAtual.inicio) / 3600000, h = (agora - turnoAtual.inicio - msPausado(agora)) / 3600000;
+    const longo = h > 12, esquecido = aberto > 24;
+    itens.push([longo || esquecido ? "vencido" : "ok", "⏱️ Turno " + (emPausa() ? "pausado" : "em andamento"),
+      longo ? "Trabalhado há " + Math.floor(h) + " h (sem pausas). Encerre se já terminou."
+        : esquecido ? "Aberto há " + Math.floor(aberto) + " h (com pausas). Encerre se já terminou." : "Iniciado às " + horaLocal(turnoAtual.inicio)]);
+  }
+  const semana = calcularTotais(p[1].inicio, p[1].fim), mes = calcularTotais(p[2].inicio, p[2].fim);
+  if (metaSemanal > 0) itens.push([semana.lucro >= metaSemanal ? "ok" : "neutro", "🎯 Meta semanal", Math.max(0, Math.round((semana.lucro / metaSemanal) * 100)) + "% • lucro " + moeda(semana.lucro) + " de " + moeda(metaSemanal)]);
+  if (metaMensal > 0) itens.push([mes.lucro >= metaMensal ? "ok" : "neutro", "🎯 Meta mensal", Math.max(0, Math.round((mes.lucro / metaMensal) * 100)) + "% • lucro " + moeda(mes.lucro) + " de " + moeda(metaMensal)]);
+  itens.push(["neutro", "📈 Resumo da semana", "Ganhos " + moeda(semana.ganhos) + " • despesas " + moeda(semana.despesas) + " • lucro " + moeda(semana.lucro)]);
+  itens.push(["neutro", "📈 Resumo do mês", "Ganhos " + moeda(mes.ganhos) + " • despesas " + moeda(mes.despesas) + " • lucro " + moeda(mes.lucro)]);
+  itens.forEach(([estado, titulo, detalhe]) => ul.append(criarItem(estado, titulo, detalhe, "")));
+}
+
+function iniciarNovos() {
+  $("formVeiculo").addEventListener("submit", aoSalvarVeiculo);
+  $("veiculoAtivo").addEventListener("change", (ev) => { definirVeiculoAtivo(ev.target.value); atualizarExtras(); });
+  $("btnExcluirVeiculo").addEventListener("click", aoExcluirVeiculo);
+  $("btnTurnoPrincipal").addEventListener("click", aoClicarTurnoPrincipal);
+  $("btnTurnoPausa").addEventListener("click", aoClicarPausa);
+  CATEGORIAS.ganho.forEach((nome) => { const o = el("option", "", nome); o.value = nome; $("categoriaResumo").append(o); });
+  $("btnResumoTurno").addEventListener("click", abrirResumoTurno);
+  $("btnResumoLancar").addEventListener("click", () => registrarTurnoEncerrado(true));
+  $("btnResumoSemLancar").addEventListener("click", () => registrarTurnoEncerrado(false));
+  $("btnResumoGanhosDia").addEventListener("click", aoUsarGanhosNoResumo);
+  $("btnResumoFormulario").addEventListener("click", aoPreencherFormularioDoResumo);
+  $("btnResumoDepois").addEventListener("click", () => { $("dlgTurno").close(); atualizarExtras(); });
+  $("btnSalvarMetaMensal").addEventListener("click", aoSalvarMetaMensal);
+  if (metaMensal > 0) $("campoMetaMensal").value = metaMensal;
+  $("btnSalvarRemuneracao").addEventListener("click", aoSalvarRemuneracao);
+  $("entregasResumo").addEventListener("input", () => aplicarRemuneracao("ganhosResumo", "entregasResumo"));
+  $("entregasTurno").addEventListener("input", () => aplicarRemuneracao("ganhosTurno", "entregasTurno"));
+  if (remuneracao.fixo > 0) $("ganhoFixoTurno").value = remuneracao.fixo;
+  if (remuneracao.porEntrega > 0) $("valorEntregaTurno").value = remuneracao.porEntrega;
+  setInterval(renderizarTurnoAtual, 1000);
+}
+
+/* --- Atualização e eventos das novas funções --- */
+function atualizarExtras() {
+  renderizarResultadoCombustivel();
+  renderizarListaCombustivel();
+  renderizarManutencao();
+  renderizarTurnos();
+  renderizarObjetivos();
+  renderizarRecordes();
+  desenharGrafico();
+  renderizarGaragem();
+  renderizarTurnoAtual();
+  renderizarMetaMensal();
+  renderizarResumoDia();
+  renderizarDesempenho();
+  renderizarAlertas();
+}
+
+function iniciarExtras() {
+  carregarExtras();
+  prepararVeiculos();
+  carregarTurnoAtual();
+  carregarTurnoEncerrado();
+  carregarMetaMensal();
+  carregarRemuneracao();
+  const hoje = dataParaTexto(new Date());
+  ["dataCombustivel", "dataManut", "dataTurno"].forEach((id) => { $(id).value = hoje; });
+  TIPOS_MANUTENCAO.forEach((t) => { const o = el("option", "", t); o.value = t; $("tipoManut").append(o); });
+
+  // Reaproveita o último abastecimento para agilizar o próximo cálculo
+  const ultimo = maisRecentes(extras.combustivel)[0];
+  if (ultimo) {
+    $("kmInicial").value = ultimo.kmFinal;
+    $("consumo").value = ultimo.consumo;
+    $("precoLitro").value = ultimo.preco;
+  }
+
+  $("formCombustivel").addEventListener("submit", aoSalvarCombustivel);
+  ["kmInicial", "kmFinal", "consumo", "precoLitro", "dataCombustivel"].forEach((id) => $(id).addEventListener("input", renderizarResultadoCombustivel));
+  $("formManutencao").addEventListener("submit", aoSalvarManutencao);
+  $("formTurno").addEventListener("submit", aoSalvarTurno);
+  $("btnGanhosDoDia").addEventListener("click", () => {
+    const g = ganhosDoDia($("dataTurno").value);
+    $("ganhosTurno").value = g > 0 ? g : "";
+    aviso("mensagemTurno", g > 0 ? "" : "Não há ganhos registrados nesta data.", g <= 0);
+  });
+  $("formObjetivo").addEventListener("submit", aoCriarObjetivo);
+
+  $("abasGrafico").addEventListener("click", (ev) => {
+    const aba = ev.target.closest(".aba");
+    if (!aba) return;
+    tipoGrafico = aba.dataset.grafico;
+    document.querySelectorAll(".aba").forEach((a) => a.classList.toggle("ativa", a === aba));
+    desenharGrafico();
+  });
+  $("filtroPeriodo").addEventListener("change", desenharGrafico);
+  $("filtroAgrupar").addEventListener("change", desenharGrafico);
+  const canvas = $("canvasGrafico");
+  canvas.addEventListener("pointermove", mostrarTooltip);
+  canvas.addEventListener("pointerdown", mostrarTooltip);
+  canvas.addEventListener("pointerleave", () => { $("tooltipGrafico").hidden = true; });
+  window.addEventListener("resize", desenharGrafico);
+  iniciarNovos();
+  iniciarMenu();
+}
+
+// Destaca no menu a seção que está visível na tela
+function iniciarMenu() {
+  if (!("IntersectionObserver" in window)) return;
+  const links = document.querySelectorAll(".menu a");
+  const observador = new IntersectionObserver((entradas) => {
+    entradas.forEach((e) => {
+      if (!e.isIntersecting) return;
+      links.forEach((l) => l.classList.toggle("ativo", l.getAttribute("href") === "#" + e.target.id));
+    });
+  }, { rootMargin: "-30% 0px -60% 0px" });
+  document.querySelectorAll("section[id^='sec-']").forEach((s) => observador.observe(s));
+}
+
+/* ---------- 7. Eventos e inicialização ---------- */
+
+function aoEnviarFormulario(evento) {
+  evento.preventDefault(); // impede a página de recarregar
+
+  const erro = validarFormulario();
+  if (erro) {
+    mostrarErro(erro);
+    return;
+  }
+  mostrarErro("");
+
+  movimentacoes.push({
+    id: gerarId(),
+    descricao: campoDescricao.value.trim(),
+    tipo: tipoSelecionado(),
+    categoria: campoCategoria.value,
+    valor: Math.round(parseFloat(campoValor.value) * 100) / 100,
+    data: campoData.value
+  });
+
+  salvarDados();
+  atualizarTela();
+
+  // Limpa descrição e valor, mantendo tipo e data para agilizar novos registros
+  campoDescricao.value = "";
+  campoValor.value = "";
+  toast("Movimentação registrada!");
+  campoDescricao.focus();
+}
+
+function aoClicarNoHistorico(evento) {
+  const botao = evento.target.closest(".btn-excluir");
+  if (!botao) return;
+  if (!confirm("Excluir esta movimentação?")) return;
+
+  movimentacoes = movimentacoes.filter(function (m) { return m.id !== botao.dataset.id; });
+  salvarDados();
+  atualizarTela();
+  toast("Movimentação excluída.");
+}
+
+function iniciar() {
+  campoData.value = dataParaTexto(new Date()); // data padrão: hoje
+  atualizarCategorias();
+  carregarDados();
+  carregarMeta();
+  iniciarExtras();
+  if (metaSemanal > 0) document.getElementById("campoMeta").value = metaSemanal;
+  indiceVersiculo = indiceDoDia();
+  renderizarVersiculo();
+  atualizarTela();
+
+  form.addEventListener("submit", aoEnviarFormulario);
+  form.elements["tipo"].forEach(function (radio) {
+    radio.addEventListener("change", atualizarCategorias);
+  });
+  listaHistorico.addEventListener("click", aoClicarNoHistorico);
+
+  // Meta semanal e palavra de incentivo
+  document.getElementById("btnSalvarMeta").addEventListener("click", aoSalvarMeta);
+  document.getElementById("btnOutroVersiculo").addEventListener("click", proximoVersiculo);
+
+  // Backup
+  const campoArquivo = document.getElementById("arquivoImportar");
+  document.getElementById("btnExportar").addEventListener("click", exportarBackup);
+  document.getElementById("btnImportar").addEventListener("click", function () {
+    campoArquivo.click();
+  });
+  campoArquivo.addEventListener("change", function () {
+    importarBackup(campoArquivo.files[0]);
+    campoArquivo.value = ""; // permite importar o mesmo arquivo de novo
+  });
+}
+
+iniciar();
