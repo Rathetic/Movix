@@ -1,9 +1,12 @@
 {
   "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.119.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
     "fake-indexeddb": "^6.2.8",
     "jsdom": "^24.1.3"
   },

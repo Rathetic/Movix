@@ -404,19 +404,61 @@ function montarPacoteBackup() {
 }
 
 // Baixa um arquivo .json com todas as movimentações
-function exportarBackup() {
+async function exportarBackup() {
   if (movimentacoes.length === 0 && !temDadosExtras()) {
     mostrarAvisoBackup("Não há movimentações para exportar.", true);
     return;
   }
+
   const pacote = montarPacoteBackup();
   const conteudo = JSON.stringify(pacote, null, 2);
+  const nomeArquivo = "movix-backup-" + dataParaTexto(new Date()) + ".json";
+  const capacitor = window.Capacitor;
+
+  // Exportação nativa pelo seletor de documentos do Android.
+  if (
+    capacitor &&
+    typeof capacitor.isNativePlatform === "function" &&
+    capacitor.isNativePlatform() &&
+    typeof capacitor.getPlatform === "function" &&
+    capacitor.getPlatform() === "android"
+  ) {
+    try {
+      const plugin = capacitor.registerPlugin("BackupFile");
+      const resultado = await plugin.save({
+        fileName: nomeArquivo,
+        content: conteudo
+      });
+
+      if (resultado && resultado.cancelled) {
+        mostrarAvisoBackup("Exportação cancelada.", false);
+        return;
+      }
+
+      if (!resultado || !resultado.saved) {
+        mostrarAvisoBackup("Não foi possível salvar o backup.", true);
+        return;
+      }
+
+      mostrarAvisoBackup(
+        "Backup exportado com " + movimentacoes.length + " movimentações.",
+        false
+      );
+    } catch (erro) {
+      console.error("Erro ao exportar backup no Android:", erro);
+      mostrarAvisoBackup("Não foi possível salvar o backup no dispositivo.", true);
+    }
+
+    return;
+  }
+
+  // Download original para navegadores.
   const arquivo = new Blob([conteudo], { type: "application/json" });
   const url = URL.createObjectURL(arquivo);
 
   const link = document.createElement("a");
   link.href = url;
-  link.download = "movix-backup-" + dataParaTexto(new Date()) + ".json";
+  link.download = nomeArquivo;
   document.body.appendChild(link);
   link.click();
   link.remove();
