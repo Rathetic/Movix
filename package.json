@@ -2,6 +2,7 @@
   "dependencies": {
     "@capacitor/android": "^8.6.2",
     "@capacitor/core": "^8.6.2",
+    "@capgo/background-geolocation": "^8.6.5",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.119.0"
   },

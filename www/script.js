@@ -1368,7 +1368,7 @@ function renderizarGaragem() {
 function carregarTurnoAtual() {
   try {
     const t = JSON.parse(localStorage.getItem(CHAVE_TURNO));
-    turnoAtual = t && typeof t.inicio === "number" && Array.isArray(t.pausas) ? t : null;
+    turnoAtual = t && typeof t.inicio === "number" && Array.isArray(t.pausas) ? { ...t, gps: normalizarGps(t.gps) } : null;
   } catch (erro) { turnoAtual = null; }
 }
 function salvarTurnoAtual() {
@@ -1385,6 +1385,7 @@ const formatarCrono = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); re
 function renderizarTurnoAtual() {
   const agora = Date.now(), principal = $("btnTurnoPrincipal"), pausa = $("btnTurnoPausa");
   $("btnResumoTurno").hidden = Boolean(turnoAtual) || !turnoEncerrado;
+  renderizarKmAoVivo();
   if (!turnoAtual) {
     $("cronometro").textContent = "00:00:00";
     $("estadoTurno").textContent = turnoEncerrado ? "Turno encerrado aguardando registro." : "Nenhum turno em andamento.";
@@ -1409,7 +1410,8 @@ function carregarTurnoEncerrado() {
   try {
     const t = JSON.parse(localStorage.getItem(CHAVE_TURNO_ENCERRADO));
     turnoEncerrado = t && typeof t.id === "string" && isFinite(t.inicio) && isFinite(t.fim) && t.fim >= t.inicio
-      ? { id: t.id, inicio: t.inicio, fim: t.fim, pausaMin: Math.max(0, Number(t.pausaMin) || 0) } : null;
+      ? { id: t.id, inicio: t.inicio, fim: t.fim, pausaMin: Math.max(0, Number(t.pausaMin) || 0),
+          ...(typeof t.kmAuto === "number" && isFinite(t.kmAuto) && t.kmAuto >= 0 ? { kmAuto: t.kmAuto } : {}), ...(t.kmLacuna === true ? { kmLacuna: true } : {}) } : null;
   } catch (erro) { turnoEncerrado = null; }
 }
 
@@ -1420,20 +1422,26 @@ function preencherFormularioDoTurno(t) {
   $("inicioTurno").value = horaLocal(t.inicio);
   $("fimTurno").value = horaLocal(t.fim);
   prefillTurno = { data: $("dataTurno").value, ini: $("inicioTurno").value, fim: $("fimTurno").value };
+  if (typeof t.kmAuto === "number") $("kmTurno").value = t.kmAuto;   // km medido pelo GPS
   $("formTurno").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-function aoClicarTurnoPrincipal() {
+function aoClicarTurnoPrincipal() { comLogGpsAtualizado(aoClicarTurnoPrincipalAgora); }
+function aoClicarTurnoPrincipalAgora() {
   if (!turnoAtual) {
     if (turnoEncerrado) { toast("Registre o turno encerrado antes de iniciar outro."); abrirResumoTurno(); return; }
-    turnoAtual = { inicio: Date.now(), pausas: [] };
+    turnoAtual = { inicio: Date.now(), pausas: [], gps: normalizarGps(null) };
     salvarTurnoAtual();
+    iniciarGps();                                    // km automático: começa a contar junto com o turno
     toast("Turno iniciado!");
   } else {
     if (!confirm("Encerrar o turno agora?")) return; // nunca encerra sem confirmação
     const agora = Date.now();                        // data e hora do encerramento
     turnoAtual.pausas.forEach((p) => { if (p.ate === null) p.ate = agora; });
-    turnoEncerrado = { id: gerarId(), inicio: turnoAtual.inicio, fim: agora, pausaMin: Math.round(msPausado(agora) / 60000) };
+    pararGps();
+    const g = turnoAtual.gps || normalizarGps(null);
+    turnoEncerrado = { id: gerarId(), inicio: turnoAtual.inicio, fim: agora, pausaMin: Math.round(msPausado(agora) / 60000),
+      ...(g.m > 0 ? { kmAuto: Math.round(g.m / 100) / 10 } : {}), ...(g.lacuna ? { kmLacuna: true } : {}) };
     salvarTurnoEncerrado();                          // guardado antes de qualquer coisa: nada se perde
     turnoAtual = null;
     salvarTurnoAtual();
@@ -1445,6 +1453,183 @@ function aoClicarTurnoPrincipal() {
     }
   }
   atualizarExtras();
+}
+
+/* --- Km automático pelo GPS ---
+   Conta os km enquanto o turno está em andamento e fora de pausa. Só guarda o TOTAL em metros e o último ponto
+   (nunca o trajeto). Todo ponto de localização entra por registrarPontoGps(): é a única porta de entrada, então um
+   serviço em segundo plano do Android pode alimentar a mesma função no futuro. */
+const GPS_PRECISAO_MAX_M = 40;   // pontos com erro maior que isso são ignorados
+const GPS_LIMIAR_MIN_M = 8;      // deslocamentos menores (ou menores que a precisão) são ruído do GPS parado
+const GPS_VEL_MAX_MS = 55;       // ~200 km/h: acima disso o ponto é um salto falso
+const GPS_LACUNA_S = 120;        // sem pontos por mais de 2 min e com deslocamento grande = houve uma lacuna
+const GPS_LACUNA_MIN_M = 200;
+const GPS_SALTOS_PARA_REINICIAR = 3;
+const GPS_LOG_INTERVALO_MS = 5000;   // no app Android: a cada 5 s lê os pontos que o serviço nativo guardou
+let gpsWatchId = null, gpsEstado = "parado", gpsUltimoSave = 0, gpsSaltos = 0;   // estado: parado | buscando | ok | semsinal | negado | indisponivel
+let gpsPlugin = null, gpsNativoAtivo = false, gpsLeitura = null, gpsLogUltimoId = 0, gpsTimerLog = null;
+
+const normalizarGps = (g) => ({
+  m: g && isFinite(g.m) && g.m >= 0 ? g.m : 0,
+  ult: g && g.ult && isFinite(g.ult.lat) && isFinite(g.ult.lon) && isFinite(g.ult.t) ? { lat: g.ult.lat, lon: g.ult.lon, t: g.ult.t, prec: isFinite(g.ult.prec) ? g.ult.prec : 999 } : null,
+  lacuna: Boolean(g && g.lacuna)
+});
+
+function distanciaMetros(a, b) {   // fórmula de haversine
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function salvarGps(forcar) {   // grava no máximo a cada 15 s, para não sobrecarregar o LocalStorage
+  const agora = Date.now();
+  if (!forcar && agora - gpsUltimoSave < 15000) return;
+  gpsUltimoSave = agora;
+  salvarTurnoAtual();
+}
+
+function registrarPontoGps(p) {   // p = { lat, lon, prec (m), t (ms) }
+  if (!turnoAtual || !p || !isFinite(p.lat) || !isFinite(p.lon)) return;
+  const g = turnoAtual.gps || (turnoAtual.gps = normalizarGps(null));
+  if (emPausa()) { g.ult = null; return; }                   // pausa não conta km
+  const prec = isFinite(p.prec) ? p.prec : 999;
+  if (prec > GPS_PRECISAO_MAX_M) return;                     // sinal ruim: espera um ponto melhor
+  const ponto = { lat: p.lat, lon: p.lon, t: isFinite(p.t) ? p.t : Date.now(), prec };
+  if (!g.ult) { g.ult = ponto; salvarGps(true); return; }    // primeiro ponto: só marca a posição de partida
+  const d = distanciaMetros(g.ult, ponto), dt = (ponto.t - g.ult.t) / 1000;
+  if (dt <= 0) return;                                       // ponto repetido ou fora de ordem
+  const vel = d / dt;
+  if (dt > GPS_LACUNA_S && d >= GPS_LACUNA_MIN_M) {          // andou bastante sem receber pontos
+    g.lacuna = true;
+    if (vel <= GPS_VEL_MAX_MS) g.m += d;                     // reta entre os dois pontos (pode ser menor que o trajeto real)
+    g.ult = ponto; gpsSaltos = 0; salvarGps(true);
+    return;
+  }
+  if (d < Math.max(GPS_LIMIAR_MIN_M, Math.min(prec, g.ult.prec))) return;   // parado ou ruído
+  if (vel > GPS_VEL_MAX_MS) {                                // salto impossível: ignora; se se repetir, reinicia a referência
+    if (++gpsSaltos >= GPS_SALTOS_PARA_REINICIAR) { g.ult = ponto; gpsSaltos = 0; salvarGps(true); }
+    return;
+  }
+  gpsSaltos = 0;
+  g.m += d;
+  g.ult = ponto;
+  salvarGps(false);
+}
+
+/* Plugin nativo de GPS em segundo plano (só existe no app Android; no navegador/site usa o GPS comum). */
+function obterPluginGps() {
+  if (gpsPlugin) return gpsPlugin;
+  try {
+    const c = window.Capacitor;
+    if (!c || typeof c.registerPlugin !== "function" || typeof c.isNativePlatform !== "function" || !c.isNativePlatform()) return null;
+    if (typeof c.isPluginAvailable === "function" && !c.isPluginAvailable("BackgroundGeolocation")) return null;
+    gpsPlugin = c.registerPlugin("BackgroundGeolocation");
+    return gpsPlugin;
+  } catch (erro) { return null; }
+}
+
+function gpsNegado() {
+  pararGps();
+  gpsEstado = "negado";
+  toast("Localização negada. Informe o km manualmente ao encerrar o turno.", true);
+}
+
+function iniciarGps() {
+  if (!turnoAtual || gpsWatchId !== null || gpsNativoAtivo) return;
+  const bg = obterPluginGps();
+  if (bg) { iniciarGpsNativo(bg); return; }
+  const geo = typeof navigator !== "undefined" ? navigator.geolocation : null;
+  if (!geo || typeof geo.watchPosition !== "function") { gpsEstado = "indisponivel"; return; }
+  gpsEstado = "buscando";
+  gpsSaltos = 0;
+  try {
+    gpsWatchId = geo.watchPosition(
+      (pos) => {
+        gpsEstado = "ok";
+        registrarPontoGps({ lat: pos.coords.latitude, lon: pos.coords.longitude, prec: pos.coords.accuracy, t: pos.timestamp });
+      },
+      (erro) => {
+        if (erro && erro.code === 1) gpsNegado();            // permissão negada
+        else gpsEstado = "semsinal";
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 60000 }
+    );
+  } catch (erro) { gpsWatchId = null; gpsEstado = "indisponivel"; }
+}
+
+/* App Android: um serviço nativo (com notificação) segue gravando a localização num log do aparelho mesmo com o app em
+   segundo plano ou a tela apagada. O app lê esse log, em ordem, e passa cada ponto por registrarPontoGps(). Ler só o log
+   (e não também o callback) evita contar o mesmo ponto duas vezes. */
+function iniciarGpsNativo(bg) {
+  gpsNativoAtivo = true;
+  gpsEstado = "buscando";
+  gpsSaltos = 0;
+  gpsTimerLog = setInterval(lerLogGps, GPS_LOG_INTERVALO_MS);
+  lerLogGps();                                               // pontos guardados enquanto o app estava fechado
+  let iniciando;
+  try {
+    iniciando = bg.start(
+      { backgroundTitle: "Movix: turno em andamento", backgroundMessage: "Contando os km do seu turno.", requestPermissions: true, stale: false, distanceFilter: 10, locationLog: true },
+      (pos, erro) => {                                       // aqui só cuidamos do estado e dos erros
+        if (!gpsNativoAtivo) return;
+        if (erro) { if (erro.code === "NOT_AUTHORIZED") gpsNegado(); else gpsEstado = "semsinal"; return; }
+        if (pos) gpsEstado = "ok";
+      }
+    );
+  } catch (erro) { iniciando = Promise.reject(erro); }
+  Promise.resolve(iniciando).catch(() => { if (gpsNativoAtivo) { pararGps(); gpsEstado = "indisponivel"; } });
+}
+
+function lerLogGps() {
+  if (!gpsPlugin || !gpsNativoAtivo) return Promise.resolve();
+  if (gpsLeitura) return gpsLeitura;                         // já tem uma leitura em andamento
+  const bg = gpsPlugin;
+  gpsLeitura = (async () => {
+    try {
+      for (let pagina = 0; pagina < 20; pagina++) {
+        const r = await bg.getLocationLog({ afterId: gpsLogUltimoId, limit: 1000 });
+        const lista = r && Array.isArray(r.entries) ? r.entries : [];
+        lista.forEach((e) => {
+          if (isFinite(e.id) && e.id > gpsLogUltimoId) gpsLogUltimoId = e.id;
+          if (turnoAtual && isFinite(e.time) && e.time >= turnoAtual.inicio) registrarPontoGps({ lat: e.latitude, lon: e.longitude, prec: e.accuracy, t: e.time });
+        });
+        if (lista.length) { if (gpsEstado !== "negado") gpsEstado = "ok"; Promise.resolve(bg.clearLocationLog({ upToId: gpsLogUltimoId })).catch(() => {}); }
+        if (lista.length < 1000) break;
+      }
+    } catch (erro) { /* mantém o que já foi contado */ }
+  })().finally(() => { gpsLeitura = null; });
+  return gpsLeitura;
+}
+
+// Antes de pausar ou encerrar, no app Android, lê os últimos pontos do log para não perder o fim do trecho.
+function comLogGpsAtualizado(acao) {
+  if (!gpsNativoAtivo) { acao(); return; }
+  lerLogGps().then(acao, acao);
+}
+
+function pararGps() {
+  if (gpsWatchId !== null) {
+    try { navigator.geolocation.clearWatch(gpsWatchId); } catch (erro) { /* ignora */ }
+    gpsWatchId = null;
+  }
+  if (gpsNativoAtivo) {
+    gpsNativoAtivo = false;
+    if (gpsTimerLog !== null) { clearInterval(gpsTimerLog); gpsTimerLog = null; }
+    try { Promise.resolve(gpsPlugin.stop()).catch(() => {}); } catch (erro) { /* ignora */ }
+  }
+  if (gpsEstado !== "negado" && gpsEstado !== "indisponivel") gpsEstado = "parado";
+}
+
+function renderizarKmAoVivo() {
+  const box = $("kmTurnoAoVivo");
+  if (!box) return;
+  if (!turnoAtual) { box.hidden = true; return; }
+  const km = (turnoAtual.gps ? turnoAtual.gps.m : 0) / 1000;
+  const estado = emPausa() ? "GPS em pausa"
+    : { ok: "GPS ativo", buscando: "buscando sinal do GPS…", semsinal: "sem sinal do GPS", negado: "localização negada: informe o km ao encerrar", indisponivel: "GPS indisponível: informe o km ao encerrar", parado: "GPS parado" }[gpsEstado];
+  box.textContent = "📍 " + formatarNumero(Math.round(km * 10) / 10) + " km • " + estado + (turnoAtual.gps && turnoAtual.gps.lacuna ? " • houve trecho sem sinal" : "");
+  box.hidden = false;
 }
 
 /* --- Resumo de encerramento do turno --- */
@@ -1471,8 +1656,11 @@ function abrirResumoTurno() {
   const notas = [];
   if (c.dataFim !== c.dataInicio) notas.push("O turno terminou em outro dia. Os ganhos serão contabilizados em " + formatarData(c.dataInicio) + ", a data de início.");
   if (c.passou24h) notas.push("O turno passou de 24 h: a duração será registrada como 24 h.");
+  if (typeof t.kmAuto === "number") notas.push("Km medido pelo GPS: " + formatarNumero(t.kmAuto) + " km. Confira e ajuste se precisar.");
+  if (t.kmLacuna) notas.push("O GPS ficou sem sinal ou o app ficou em segundo plano em parte do turno, então o km pode estar menor que o real.");
   $("notaEncerramento").textContent = notas.join(" ");
   ["ganhosResumo", "entregasResumo", "kmResumo"].forEach((id) => { $(id).value = ""; });
+  if (typeof t.kmAuto === "number") $("kmResumo").value = t.kmAuto;
   aplicarRemuneracao("ganhosResumo", "entregasResumo");   // com remuneração ativa, já mostra o ganho fixo
   $("categoriaResumo").value = CATEGORIA_GANHO_TURNO;
   aviso("msgResumo", "", false);
@@ -1519,11 +1707,18 @@ function aoPreencherFormularioDoResumo() {
   atualizarExtras();
 }
 
-function aoClicarPausa() {
+function aoClicarPausa() { comLogGpsAtualizado(aoClicarPausaAgora); }
+function aoClicarPausaAgora() {
   if (!turnoAtual) return;
   const agora = Date.now();
-  if (emPausa()) turnoAtual.pausas.forEach((p) => { if (p.ate === null) p.ate = agora; });
-  else turnoAtual.pausas.push({ de: agora, ate: null });
+  if (emPausa()) {
+    turnoAtual.pausas.forEach((p) => { if (p.ate === null) p.ate = agora; });
+    iniciarGps();                                    // volta a contar km
+  } else {
+    turnoAtual.pausas.push({ de: agora, ate: null });
+    if (turnoAtual.gps) turnoAtual.gps.ult = null;   // o trecho da pausa não conta
+    pararGps();
+  }
   salvarTurnoAtual();
   renderizarTurnoAtual();
 }
@@ -1704,6 +1899,8 @@ function iniciarExtras() {
   prepararVeiculos();
   carregarTurnoAtual();
   carregarTurnoEncerrado();
+  if (turnoAtual && !emPausa()) iniciarGps();   // turno em andamento: retoma o km automático
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) lerLogGps(); });   // voltou ao app: recupera os pontos do segundo plano
   carregarMetaMensal();
   carregarRemuneracao();
   const hoje = dataParaTexto(new Date());
