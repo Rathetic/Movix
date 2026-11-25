@@ -153,6 +153,10 @@ function obterPeriodos() {
 /* ---------- 5. Validação ---------- */
 
 // Retorna uma mensagem de erro, ou "" se estiver tudo certo
+function ehCategoriaManutencao(categoria) {
+  return categoria === "Manutenção" || categoria === "Manutenção veicular";
+}
+
 function validarFormulario() {
   const descricao = campoDescricao.value.trim();
   const valor = parseFloat(campoValor.value);
@@ -161,6 +165,24 @@ function validarFormulario() {
   if (!CATEGORIAS[tipoSelecionado()].includes(campoCategoria.value)) return "Escolha uma categoria.";
   if (!isFinite(valor) || valor <= 0) return "Informe um valor maior que zero.";
   if (campoData.value === "" || isNaN(new Date(campoData.value + "T00:00:00"))) return "Informe uma data válida.";
+  if (tipoSelecionado() === "despesa" && ehCategoriaManutencao(campoCategoria.value)) {
+    const km = Number($("kmManutDespesa").value);
+    if (!$("tipoManutDespesa").value) return "Selecione o tipo de manutenção.";
+    if ($("kmManutDespesa").value.trim() === "" || !Number.isFinite(km) || km < 0) return "Informe a quilometragem do veículo.";
+    if (!veiculoAtivo) return "Cadastre ou selecione um veículo na Garagem antes de registrar a manutenção.";
+  }
+  if (tipoSelecionado() === "despesa" && campoCategoria.value === "Combustível") {
+    const km = Number($("kmCombDespesa").value), litros = Number($("litrosCombDespesa").value);
+    if (!veiculoAtivo) return "Cadastre ou selecione um veículo na Garagem antes de registrar o abastecimento.";
+    if ($("kmCombDespesa").value.trim() === "" || !Number.isFinite(km) || km <= 0) return "Informe o KM atual do veículo.";
+    if (!Number.isFinite(litros) || litros <= 0) return "Informe a quantidade de litros abastecidos.";
+    if ($("kmInicialCombDespesa").value.trim() !== "") {
+      const inicial = Number($("kmInicialCombDespesa").value);
+      if (!Number.isFinite(inicial) || inicial < 0 || inicial >= km) return "O KM inicial deve ser menor que o KM atual.";
+    }
+    if (!obterKmInicialAbastecimento(km)) return "Informe o KM inicial de referência para o primeiro abastecimento.";
+    if (obterKmInicialAbastecimento(km) >= km) return "O KM atual deve ser maior que o último KM registrado.";
+  }
   return "";
 }
 
@@ -173,6 +195,7 @@ function mostrarErro(texto) {
 
 // Preenche o select de categorias conforme o tipo escolhido
 function atualizarCategorias() {
+  const categoriaAnterior = campoCategoria.value;
   campoCategoria.innerHTML = "";
   CATEGORIAS[tipoSelecionado()].forEach(function (nome) {
     const opcao = document.createElement("option");
@@ -180,6 +203,33 @@ function atualizarCategorias() {
     opcao.textContent = nome;
     campoCategoria.appendChild(opcao);
   });
+  if (CATEGORIAS[tipoSelecionado()].includes(categoriaAnterior)) campoCategoria.value = categoriaAnterior;
+  atualizarCamposManutencaoDespesa();
+}
+
+function atualizarCamposManutencaoDespesa() {
+  const despesa = tipoSelecionado() === "despesa";
+  const mostrarManutencao = despesa && ehCategoriaManutencao(campoCategoria.value);
+  const mostrarCombustivel = despesa && campoCategoria.value === "Combustível";
+  $("camposManutencaoDespesa").hidden = !mostrarManutencao;
+  $("camposCombustivelDespesa").hidden = !mostrarCombustivel;
+  const ultimo = extras.combustivel.filter((c) => c.veiculoId === veiculoAtivo).sort((a,b) => b.data.localeCompare(a.data) || b.kmFinal-a.kmFinal)[0];
+  const kmInicialCampo = $("kmInicialCombDespesa");
+  if (kmInicialCampo) {
+    const referencia = ultimo ? ultimo.kmFinal : (extras.veiculos.find(v => v.id === veiculoAtivo)?.kmAtual || 0);
+    kmInicialCampo.value = referencia > 0 ? referencia : "";
+    kmInicialCampo.readOnly = referencia > 0;
+    kmInicialCampo.closest("div").hidden = referencia > 0;
+  }
+}
+
+function obterKmInicialAbastecimento(kmFinal) {
+  const anteriores = extras.combustivel.filter((c) => c.veiculoId === veiculoAtivo && c.kmFinal < kmFinal);
+  if (anteriores.length) return Math.max(...anteriores.map((c) => c.kmFinal));
+  const kmVeiculo = extras.veiculos.find((v) => v.id === veiculoAtivo)?.kmAtual || 0;
+  if (kmVeiculo > 0 && kmVeiculo < kmFinal) return kmVeiculo;
+  const informado = Number($("kmInicialCombDespesa")?.value);
+  return $("kmInicialCombDespesa")?.value.trim() !== "" && Number.isFinite(informado) && informado >= 0 && informado < kmFinal ? informado : null;
 }
 
 // Atualiza os 3 cards do topo
@@ -743,7 +793,8 @@ function removerExtra(nome, id) {
   extras[nome] = extras[nome].filter((i) => i.id !== id);
   salvarExtras(nome);
   // apaga SOMENTE a despesa vinculada a este registro
-  movimentacoes = movimentacoes.filter((m) => !(m.origem && m.origem.id === id));
+  const tipoOrigem = nome === "combustivel" ? "combustivel" : nome === "manutencoes" ? "manutencao" : null;
+  movimentacoes = movimentacoes.filter((m) => !(tipoOrigem && m.origem && m.origem.tipo === tipoOrigem && m.origem.id === id));
   salvarDados();
   atualizarTela();
   toast("Registro excluído.");
@@ -1073,7 +1124,7 @@ function aoSalvarTurno(ev) {
   if (!Number.isInteger(entregas) || entregas < 0) return aviso("mensagemTurno", "Informe a quantidade de entregas (número inteiro).", true);
 
   const automatico = prefillTurno && prefillTurno.data === data && prefillTurno.ini === ini && prefillTurno.fim === fim;
-  extras.turnos.push({ id: gerarId(), data, inicio: ini, fim, minutos, ganhos: arred(ganhos), entregas, pausaMin: pausaPendente, registro: automatico ? "automático" : "manual", ...(isFinite(km) && km >= 0 ? { km } : {}) });
+  extras.turnos.push({ id: gerarId(), data, inicio: ini, fim, minutos, ganhos: arred(ganhos), entregas, pausaMin: pausaPendente, registro: automatico ? "automático" : "manual", veiculoId: veiculoIdValido(prefillTurno && prefillTurno.veiculoId) || veiculoIdValido(veiculoAtivo), ...(isFinite(km) && km >= 0 ? { km } : {}) });
   pausaPendente = 0;
   prefillTurno = null;
   salvarExtras("turnos");
@@ -1104,7 +1155,7 @@ function renderizarTurnos() {
     const li = criarItem(
       "ganho",
       formatarData(x.data) + " • " + x.inicio + " às " + x.fim + " (" + horasTexto(x.minutos) + ")" + (x.registro === "manual" ? " • horário manual" : ""),
-      formatarMoeda(arred(x.ganhos / (x.minutos / 60))) + "/h • " + x.entregas + " entregas" + (x.entregas > 0 ? " • " + formatarMoeda(arred(x.ganhos / x.entregas)) + "/entrega" : "") + (lancado ? " • ganho lançado" : ""),
+      (veiculoIdValido(x.veiculoId) ? nomeDoVeiculo(x.veiculoId) : "Sem veículo associado") + " • " + formatarMoeda(arred(x.ganhos / (x.minutos / 60))) + "/h • " + x.entregas + " entregas" + (x.entregas > 0 ? " • " + formatarMoeda(arred(x.ganhos / x.entregas)) + "/entrega" : "") + (lancado ? " • ganho lançado" : ""),
       formatarMoeda(x.ganhos),
       () => removerExtra("turnos", x.id)
     );
@@ -1253,6 +1304,10 @@ function importarExtras(pacote) {
     try { localStorage.setItem(CHAVE_META_MENSAL, String(mensal)); } catch (erro) { /* ignora */ }
     $("campoMetaMensal").value = mensal;
   }
+  const idsVeiculos = new Set(extras.veiculos.map((v) => v.id));
+  let soltos = false;
+  extras.turnos.forEach((t) => { if (t.veiculoId && !idsVeiculos.has(t.veiculoId)) { t.veiculoId = null; soltos = true; } });
+  if (soltos) salvarExtras("turnos");                // turno importado de um veículo que não veio no backup
   prepararVeiculos(); // liga registros importados sem veículo ao veículo padrão
 }
 
@@ -1276,6 +1331,7 @@ let prefillTurno = null; // horários preenchidos pelo cronômetro (para saber s
 
 const moeda = (v) => formatarMoeda(arred(v));
 const veiculoAtivoId = () => veiculoAtivo;
+const veiculoIdValido = (id) => id && extras.veiculos.some((v) => v.id === id) ? id : null;
 const nomeDoVeiculo = (id) => { const v = extras.veiculos.find((x) => x.id === id); return v ? v.apelido : "Veículo"; };
 const nomeVeiculo = () => nomeDoVeiculo(veiculoAtivo);
 const kmDoVeiculo = (vid) => Math.max(0,
@@ -1330,7 +1386,15 @@ function aoExcluirVeiculo() {
   if (extras.combustivel.some((c) => c.veiculoId === id) || extras.manutencoes.some((m) => m.veiculoId === id)) {
     return toast("Exclua antes os abastecimentos e manutenções deste veículo.", true);
   }
-  if (!confirm("Excluir o veículo " + nomeVeiculo() + "?")) return;
+  if ((turnoAtual && turnoAtual.veiculoId === id) || (turnoEncerrado && turnoEncerrado.veiculoId === id)) {
+    return toast("Encerre e registre o turno deste veículo antes de excluí-lo.", true);
+  }
+  const vinculados = extras.turnos.filter((t) => t.veiculoId === id).length;
+  if (!confirm("Excluir o veículo " + nomeVeiculo() + "?" + (vinculados ? " Os " + vinculados + " turno(s) registrados com ele continuam salvos, só ficam sem veículo." : ""))) return;
+  if (vinculados) {                                  // o histórico de turnos é preservado; só o vínculo é solto
+    extras.turnos.forEach((t) => { if (t.veiculoId === id) t.veiculoId = null; });
+    salvarExtras("turnos");
+  }
   extras.veiculos = extras.veiculos.filter((v) => v.id !== id);
   salvarExtras("veiculos");
   definirVeiculoAtivo(extras.veiculos[0].id);
@@ -1410,7 +1474,7 @@ function carregarTurnoEncerrado() {
   try {
     const t = JSON.parse(localStorage.getItem(CHAVE_TURNO_ENCERRADO));
     turnoEncerrado = t && typeof t.id === "string" && isFinite(t.inicio) && isFinite(t.fim) && t.fim >= t.inicio
-      ? { id: t.id, inicio: t.inicio, fim: t.fim, pausaMin: Math.max(0, Number(t.pausaMin) || 0),
+      ? { id: t.id, inicio: t.inicio, fim: t.fim, pausaMin: Math.max(0, Number(t.pausaMin) || 0), veiculoId: veiculoIdValido(t.veiculoId),
           ...(typeof t.kmAuto === "number" && isFinite(t.kmAuto) && t.kmAuto >= 0 ? { kmAuto: t.kmAuto } : {}), ...(t.kmLacuna === true ? { kmLacuna: true } : {}) } : null;
   } catch (erro) { turnoEncerrado = null; }
 }
@@ -1421,7 +1485,7 @@ function preencherFormularioDoTurno(t) {
   $("dataTurno").value = dataParaTexto(new Date(t.inicio));
   $("inicioTurno").value = horaLocal(t.inicio);
   $("fimTurno").value = horaLocal(t.fim);
-  prefillTurno = { data: $("dataTurno").value, ini: $("inicioTurno").value, fim: $("fimTurno").value };
+  prefillTurno = { data: $("dataTurno").value, ini: $("inicioTurno").value, fim: $("fimTurno").value, veiculoId: veiculoIdValido(t.veiculoId) };
   if (typeof t.kmAuto === "number") $("kmTurno").value = t.kmAuto;   // km medido pelo GPS
   $("formTurno").scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -1430,7 +1494,7 @@ function aoClicarTurnoPrincipal() { comLogGpsAtualizado(aoClicarTurnoPrincipalAg
 function aoClicarTurnoPrincipalAgora() {
   if (!turnoAtual) {
     if (turnoEncerrado) { toast("Registre o turno encerrado antes de iniciar outro."); abrirResumoTurno(); return; }
-    turnoAtual = { inicio: Date.now(), pausas: [], gps: normalizarGps(null) };
+    turnoAtual = { inicio: Date.now(), pausas: [], veiculoId: veiculoIdValido(veiculoAtivo), gps: normalizarGps(null) };
     salvarTurnoAtual();
     iniciarGps();                                    // km automático: começa a contar junto com o turno
     toast("Turno iniciado!");
@@ -1440,7 +1504,7 @@ function aoClicarTurnoPrincipalAgora() {
     turnoAtual.pausas.forEach((p) => { if (p.ate === null) p.ate = agora; });
     pararGps();
     const g = turnoAtual.gps || normalizarGps(null);
-    turnoEncerrado = { id: gerarId(), inicio: turnoAtual.inicio, fim: agora, pausaMin: Math.round(msPausado(agora) / 60000),
+    turnoEncerrado = { id: gerarId(), inicio: turnoAtual.inicio, fim: agora, pausaMin: Math.round(msPausado(agora) / 60000), veiculoId: veiculoIdValido(turnoAtual.veiculoId),
       ...(g.m > 0 ? { kmAuto: Math.round(g.m / 100) / 10 } : {}), ...(g.lacuna ? { kmLacuna: true } : {}) };
     salvarTurnoEncerrado();                          // guardado antes de qualquer coisa: nada se perde
     turnoAtual = null;
@@ -1677,7 +1741,7 @@ function registrarTurnoEncerrado(lancar) {
   if (!Number.isInteger(entregas) || entregas < 0) return aviso("msgResumo", "Informe a quantidade de entregas (número inteiro).", true);
 
   const t = turnoEncerrado, c = calcularEncerramento(t);
-  const turno = { id: t.id, data: c.dataInicio, inicio: horaLocal(t.inicio), fim: horaLocal(t.fim), minutos: c.efetivo, ganhos: arred(ganhos), entregas, pausaMin: t.pausaMin, registro: "automático", ...(isFinite(km) && km >= 0 ? { km } : {}) };
+  const turno = { id: t.id, data: c.dataInicio, inicio: horaLocal(t.inicio), fim: horaLocal(t.fim), minutos: c.efetivo, ganhos: arred(ganhos), entregas, pausaMin: t.pausaMin, registro: "automático", veiculoId: veiculoIdValido(t.veiculoId) || veiculoIdValido(veiculoAtivo), ...(isFinite(km) && km >= 0 ? { km } : {}) };
   const vaiLancar = lancar && turno.ganhos > 0;
   if (vaiLancar && !confirmarPossivelDuplicidade(turno)) return;   // o usuário decide; nada foi gravado ainda
 
@@ -1905,7 +1969,10 @@ function iniciarExtras() {
   carregarRemuneracao();
   const hoje = dataParaTexto(new Date());
   ["dataCombustivel", "dataManut", "dataTurno"].forEach((id) => { $(id).value = hoje; });
-  TIPOS_MANUTENCAO.forEach((t) => { const o = el("option", "", t); o.value = t; $("tipoManut").append(o); });
+  TIPOS_MANUTENCAO.forEach((t) => {
+    const o = el("option", "", t); o.value = t; $("tipoManut").append(o);
+    const od = el("option", "", t); od.value = t; $("tipoManutDespesa").append(od);
+  });
 
   // Reaproveita o último abastecimento para agilizar o próximo cálculo
   const ultimo = maisRecentes(extras.combustivel)[0];
@@ -1969,14 +2036,45 @@ function aoEnviarFormulario(evento) {
   }
   mostrarErro("");
 
-  movimentacoes.push({
-    id: gerarId(),
+  const idMovimentacao = gerarId();
+  const novaMovimentacao = {
+    id: idMovimentacao,
     descricao: campoDescricao.value.trim(),
     tipo: tipoSelecionado(),
     categoria: campoCategoria.value,
     valor: Math.round(parseFloat(campoValor.value) * 100) / 100,
     data: campoData.value
-  });
+  };
+
+  if (novaMovimentacao.tipo === "despesa" && novaMovimentacao.categoria === "Combustível") {
+    const kmFinal = Number($("kmCombDespesa").value);
+    const kmInicial = obterKmInicialAbastecimento(kmFinal);
+    const litros = Number($("litrosCombDespesa").value);
+    const distancia = arred(kmFinal - kmInicial);
+    const preco = arred(novaMovimentacao.valor / litros);
+    const consumo = arred(distancia / litros);
+    extras.combustivel.push({ id: idMovimentacao, data: novaMovimentacao.data, veiculoId: veiculoAtivo,
+      kmInicial, kmFinal, consumo, preco, distancia, litros: arred(litros), custo: novaMovimentacao.valor });
+    salvarExtras("combustivel");
+    novaMovimentacao.origem = { tipo: "combustivel", id: idMovimentacao };
+  }
+
+  if (novaMovimentacao.tipo === "despesa" && ehCategoriaManutencao(novaMovimentacao.categoria)) {
+    const tipoManutencao = $("tipoManutDespesa").value;
+    const descricaoManutencao = $("descManutDespesa").value.trim() || novaMovimentacao.descricao;
+    extras.manutencoes.push({
+      id: idMovimentacao,
+      tipo: tipoManutencao,
+      descricao: descricaoManutencao,
+      valor: novaMovimentacao.valor,
+      km: Number($("kmManutDespesa").value),
+      data: novaMovimentacao.data,
+      veiculoId: veiculoAtivo
+    });
+    salvarExtras("manutencoes");
+    novaMovimentacao.origem = { tipo: "manutencao", id: idMovimentacao };
+  }
+  movimentacoes.push(novaMovimentacao);
 
   salvarDados();
   atualizarTela();
@@ -1984,6 +2082,11 @@ function aoEnviarFormulario(evento) {
   // Limpa descrição e valor, mantendo tipo e data para agilizar novos registros
   campoDescricao.value = "";
   campoValor.value = "";
+  $("kmManutDespesa").value = "";
+  $("descManutDespesa").value = "";
+  $("kmCombDespesa").value = "";
+  $("litrosCombDespesa").value = "";
+  atualizarCamposManutencaoDespesa();
   toast("Movimentação registrada!");
   campoDescricao.focus();
 }
@@ -1993,7 +2096,15 @@ function aoClicarNoHistorico(evento) {
   if (!botao) return;
   if (!confirm("Excluir esta movimentação?")) return;
 
+  const removida = movimentacoes.find((m) => m.id === botao.dataset.id);
   movimentacoes = movimentacoes.filter(function (m) { return m.id !== botao.dataset.id; });
+  if (removida && removida.origem && removida.origem.tipo === "manutencao") {
+    extras.manutencoes = extras.manutencoes.filter((m) => m.id !== removida.origem.id);
+    salvarExtras("manutencoes");
+  } else if (removida && removida.origem && removida.origem.tipo === "combustivel") {
+    extras.combustivel = extras.combustivel.filter((c) => c.id !== removida.origem.id);
+    salvarExtras("combustivel");
+  }
   salvarDados();
   atualizarTela();
   toast("Movimentação excluída.");
@@ -2014,6 +2125,7 @@ function iniciar() {
   form.elements["tipo"].forEach(function (radio) {
     radio.addEventListener("change", atualizarCategorias);
   });
+  campoCategoria.addEventListener("change", atualizarCamposManutencaoDespesa);
   listaHistorico.addEventListener("click", aoClicarNoHistorico);
 
   // Meta semanal e palavra de incentivo

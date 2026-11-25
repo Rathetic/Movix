@@ -39,7 +39,7 @@ Bug extra descoberto pelos novos testes (pré-existente): quando uma exclusão l
 
 ## 3. Testes (`npm test`)
 
-57 testes automatizados, 2 rodadas completas sem flutuação. Rodam os arquivos **reais** num jsdom com Supabase simulado (RLS, filtros, ordenação, `limit`, PATCH, falhas/atrasos injetáveis), e o `backup-local.js` real com IndexedDB e Web Locks simulados.
+96 testes automatizados na execução registrada pelo usuário em 24/11/2026; a suíte de vínculo passou a ter 11 testes após a inclusão da validação visual do histórico (97 testes esperados no total). Rodam os arquivos **reais** num jsdom com Supabase simulado (RLS, filtros, ordenação, `limit`, PATCH, falhas/atrasos injetáveis), e o `backup-local.js` real com IndexedDB e Web Locks simulados.
 
 | Suíte | Antes (original) | Depois |
 |---|---|---|
@@ -52,7 +52,7 @@ Os 2 "antes" de `funcionalidades` são exatamente o rótulo do card e o alerta d
 
 ## 4. Limitações (honestas)
 
-- **Não há Chromium neste ambiente**: os testes usam jsdom/fake-indexeddb/Web Locks simulado. A suíte Chromium antiga (`testes/` do zip aninhado) **não foi reexecutada**; recomendo rodá-la e fazer um teste manual em 2 aparelhos reais antes de publicar.
+- **Não há Chromium neste ambiente**: os testes usam jsdom/fake-indexeddb/Web Locks simulado. O registro `testes/RESULTADO-testes.txt` informa 47/47 testes do módulo e 87/87 testes de integração Chromium aprovados. Esses resultados são registros fornecidos no pacote; não foram reproduzidos nesta execução.
 - O Supabase é simulado: comportamento real de RLS/PostgREST (ex.: `return=representation` exigir política de SELECT) deve ser validado em ambiente de homologação.
 - Teste "ativação com snapshot falho" passa também na versão original por um artefato do jsdom (sem `URL.createObjectURL`); os demais da ativação diferenciam antes/depois.
 - Exclusão cuja linha **não existe/não é visível** na nuvem fica pendente e reportada (não dá para distinguir de RLS). Pode repetir a cada rodada; solução definitiva exigiria uma RPC (abaixo).
@@ -74,4 +74,12 @@ alter table public.migracoes add constraint migracoes_status_check check (status
 Riscos: índice grande bloqueia escrita se criado sem `concurrently`; a constraint pode ter outro nome/valores — conferir antes.
 
 ## 6. Arquivos
-Alterados: `sync.js`, `script.js`, `backup-local.js`, `index.html`, `package.json`. Novos: `testes/*` (6 arquivos). Dependências de desenvolvimento: `jsdom`, `fake-indexeddb`.
+Alterados na correção de confiabilidade: `sync.js`, `script.js`, `backup-local.js`, `index.html`, `package.json`. Novos: `testes/*` (6 arquivos). A correção posterior de vínculo de veículos acrescenta `www/script.js`, `www/sync.js` e `testes/turno-veiculo.teste.js`. A revisão atual também mostra o veículo associado no histórico e adiciona um teste para jornadas sem vínculo. Dependências de desenvolvimento: `jsdom`, `fake-indexeddb`.
+
+### Integração de combustível lançado em Despesas
+- Despesas na categoria `Combustível` agora exigem veículo ativo, KM do hodômetro e litros abastecidos.
+- O abastecimento é criado no histórico da Garagem com o mesmo ID da movimentação financeira; não cria uma segunda despesa.
+- O preço por litro é calculado pelo valor da despesa dividido pelos litros. O consumo estimado usa a distância desde o KM de referência dividido pelos litros (método tanque cheio).
+- Havendo abastecimento anterior, o KM final anterior é usado como referência. No primeiro registro, usa-se o KM atual cadastrado do veículo; se não houver, o formulário solicita o KM inicial de referência.
+- A exclusão da despesa remove o abastecimento vinculado, e a exclusão do abastecimento remove somente a despesa cuja origem corresponde a esse abastecimento.
+- Validação: `node --check` aprovado nos três `script.js`; IDs HTML sem duplicidade nas três cópias. Testes automatizados não executados (dependências de desenvolvimento ausentes). Build Android e sincronização real com Supabase não executados.

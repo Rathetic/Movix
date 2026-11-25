@@ -1,1 +1,29 @@
+# Dependências e caches
 node_modules/
+.gradle/
+**/build/
+
+# Configuração local e segredos
+.env
+.env.*
+!.env.example
+android/local.properties
+**/*.jks
+**/*.keystore
+**/google-services.json
+
+# IDE e sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Artefatos de distribuição
+*.apk
+*.aab
+*.log
+
+# Arquivos temporários e pacotes aninhados
+*.patch
+*.zip
+.freebuff/

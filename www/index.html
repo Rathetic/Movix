@@ -14,7 +14,6 @@
   <link rel="stylesheet" href="style.css?v=13">
   <link rel="preload" href="fonts/inter-400.woff" as="font" type="font/woff" crossorigin>
   <script src="config.js"></script>
-  <script src="capacitor.js"></script>
   <script>
     /* Decide a tela ANTES de desenhar a página: sem login e com Supabase configurado -> Lobby. */
     (function () {
@@ -245,6 +244,23 @@
                 <label for="data">Data</label>
                 <input type="date" id="data">
               </div>
+            </div>
+
+            <div id="camposManutencaoDespesa" hidden>
+              <p class="dica">Esta despesa também será registrada no histórico da Garagem do veículo ativo. Informe o tipo e a quilometragem.</p>
+              <div class="linha">
+                <div><label for="tipoManutDespesa">Tipo de manutenção</label><select id="tipoManutDespesa"></select></div>
+                <div><label for="kmManutDespesa">Km do veículo</label><input type="number" id="kmManutDespesa" min="0" step="1" inputmode="numeric" placeholder="Ex.: 37200"></div>
+              </div>
+              <div><label for="descManutDespesa">Descrição complementar (opcional)</label><input type="text" id="descManutDespesa" maxlength="60" placeholder="Ex.: Óleo e filtro"></div>
+            </div>
+            <div id="camposCombustivelDespesa" hidden>
+              <p class="dica">Este abastecimento também será registrado na Garagem do veículo ativo. Informe o KM do hodômetro e os litros abastecidos; o preço por litro será calculado pelo valor da despesa. A estimativa de consumo considera abastecimentos completos (método tanque cheio).</p>
+              <div class="linha">
+                <div><label for="kmCombDespesa">KM atual do veículo</label><input type="number" id="kmCombDespesa" min="0.1" step="0.1" inputmode="decimal" placeholder="Ex.: 37450"></div>
+                <div><label for="litrosCombDespesa">Litros abastecidos</label><input type="number" id="litrosCombDespesa" min="0.01" step="0.01" inputmode="decimal" placeholder="Ex.: 8,5"></div>
+              </div>
+              <div><label for="kmInicialCombDespesa">KM inicial de referência (primeiro registro)</label><input type="number" id="kmInicialCombDespesa" min="0" step="0.1" inputmode="decimal" placeholder="KM anterior do hodômetro"></div>
             </div>
 
             <p id="mensagemErro" class="erro" role="alert"></p>
