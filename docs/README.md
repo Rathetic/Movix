@@ -1,0 +1,7 @@
+# Documentação do Movix
+
+- `checklist-regressao.md` — checklist manual de regressão do redesign.
+- `assinaturas/` — planos e assinaturas (Free/Premium): auditoria da Etapa 1, análise anterior e rascunho da fundação.
+- `historico/` — relatórios e notas de correções anteriores (referência, não editar).
+
+Fora de `docs/`: `_arquivo/` guarda patches, pacotes `.zip` antigos, scripts já usados e arquivos soltos descartados (nada foi apagado; pode ser removido do repositório quando você quiser).
